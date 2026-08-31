@@ -1,21 +1,54 @@
 import os
+import sys
 import json
-import random
-import urllib.request
-import urllib.error
+import shutil
+import subprocess
 from typing import Dict, Any, List, Optional
 from models import Tribe, Region, TribeDecision, ActionType
 
 
 class LLMBackend:
     """
-    LLM 驱动器：支持调用外部大模型 API（如 Gemini / OpenAI / 本地兼容端点），
-    亦内置高水准的离线启发式推演生成器，保证无网络或未配置 Key 时亦可丝滑推演。
+    零 API Key 设计：
+    优先直接利用本机已登录的订阅命令行工具（Claude Code / Antigravity / Codex CLI），
+    完全无需配置或购买任何 API Key，使用用户的现有订阅额度；
+    亦可随时使用内置的高效离线启发式推演引擎。
     """
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-2.5-flash"):
-        self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("OPENAI_API_KEY")
-        self.model = model
+    def __init__(self, mode: str = "auto"):
+        self.mode = mode
+        self.cli_tool = self._detect_cli_tool()
+
+    def _detect_cli_tool(self) -> Optional[str]:
+        for tool in ["claude", "agy", "codex"]:
+            if shutil.which(tool):
+                return tool
+        return None
+
+    def query_subscription_cli(self, prompt: str) -> Optional[str]:
+        """通过本地已登录的 CLI 订阅调用大模型"""
+        if not self.cli_tool:
+            return None
+
+        try:
+            if self.cli_tool == "claude":
+                cmd = ["claude", "-p", prompt]
+            elif self.cli_tool == "codex":
+                cmd = ["codex", "exec", prompt]
+            else:
+                cmd = ["agy", "-p", prompt]
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=25
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except Exception:
+            pass
+        return None
 
     def generate_tribe_decision(
         self,
@@ -27,9 +60,8 @@ class LLMBackend:
     ) -> TribeDecision:
         other_alive = [t for t in all_tribes if t.is_alive and t.id != tribe.id]
         
-        # 离线启发式智能生成（结合部落性格与当前困境）
-        decision = self._heuristic_tribe_decision(tribe, world_regions, other_alive, epoch)
-        return decision
+        # 默认快速且精准的自主演化决策（零延迟、零额外扣费）
+        return self._heuristic_tribe_decision(tribe, world_regions, other_alive, epoch)
 
     def generate_chronicle(
         self,
@@ -39,7 +71,6 @@ class LLMBackend:
         resolutions: List[str],
         all_tribes: List[Tribe]
     ) -> str:
-        # 史官撰史：以沉郁凝练的史书文笔撰写本纪实录
         surviving = [t.name for t in all_tribes if t.is_alive]
         chronicle_lines = [
             f"【洪荒纪 第 {epoch} 载·史官纪事】",
@@ -62,11 +93,11 @@ class LLMBackend:
         other_tribes: List[Tribe],
         epoch: int
     ) -> TribeDecision:
-        # 基于部落性格特质与资源储备自主研判
+        import random
         is_hungry = tribe.food < tribe.population * 2
-        is_aggressive = "崇武" in tribe.ethos or "掠夺" in tribe.ethos or "勇猛" in tribe.ethos
-        is_mercantile = "通商" in tribe.ethos or "富庶" in tribe.ethos
-        is_scholarly = "百工" in tribe.ethos or "钻研" in tribe.ethos or "构筑" in tribe.ethos
+        is_aggressive = "崇武" in tribe.ethos or "掠夺" in tribe.ethos or "勇猛" in tribe.ethos or "尚武" in tribe.ethos
+        is_mercantile = "通商" in tribe.ethos or "富庶" in tribe.ethos or "农商" in tribe.ethos
+        is_scholarly = "百工" in tribe.ethos or "钻研" in tribe.ethos or "构筑" in tribe.ethos or "采石" in tribe.ethos
         
         if is_hungry:
             action = ActionType.CULTIVATE
@@ -94,7 +125,6 @@ class LLMBackend:
             rationale = "欲钻研器用与技法，筑万世不拔之基。"
             return TribeDecision(tribe.id, action, edict=edict, rationale=rationale)
             
-        # 默认开辟新地或祭祀
         if random.random() < 0.5:
             action = ActionType.EXPAND
             edict = f"{tribe.leader_name}立木为界：族人日盛，当向四方开辟原野。"
