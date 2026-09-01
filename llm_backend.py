@@ -1,4 +1,4 @@
-"""Open plan and event proposer with a deterministic offline fallback."""
+"""LLM-first open plan, event and chronicle generation with an offline fallback."""
 
 import json
 import random
@@ -21,6 +21,8 @@ from models import (
 
 class LLMBackend:
     """Propose meanings and causal hypotheses, without mutating world state."""
+
+    AGY_MODEL = "gemini-3.7-flash-high"
 
     TAG_NAMES = {
         "nutrition": "可代谢性",
@@ -49,15 +51,24 @@ class LLMBackend:
         "elevation": "相对势位",
     }
 
-    def __init__(self, mode: str = "heuristic"):
+    def __init__(self, mode: str = "cli"):
         if mode not in {"heuristic", "cli"}:
             raise ValueError("mode must be 'heuristic' or 'cli'")
         self.mode = mode
         self.cli_tool = self._detect_cli_tool() if mode == "cli" else None
+        self.cli_model = self.AGY_MODEL if self.cli_tool == "agy" else None
+        self.stats = {
+            "llm_plan": 0,
+            "heuristic_plan": 0,
+            "llm_event": 0,
+            "heuristic_event": 0,
+            "llm_chronicle": 0,
+            "fallback_chronicle": 0,
+        }
 
     @staticmethod
     def _detect_cli_tool() -> Optional[str]:
-        for tool in ("claude", "codex", "agy"):
+        for tool in ("agy", "codex", "claude"):
             if shutil.which(tool):
                 return tool
         return None
@@ -87,7 +98,9 @@ class LLMBackend:
             )
             parsed = self._parse_plan(self._query_cli(prompt), actor.id)
             if parsed:
+                self.stats["llm_plan"] += 1
                 return parsed
+        self.stats["heuristic_plan"] += 1
         return self._heuristic_plan(
             actor,
             location,
@@ -112,7 +125,9 @@ class LLMBackend:
             prompt = self._event_prompt(locations, resource_specs, epoch, recent_history)
             parsed = self._parse_event(self._query_cli(prompt))
             if parsed:
+                self.stats["llm_event"] += 1
                 return parsed
+        self.stats["heuristic_event"] += 1
         return self._heuristic_event(locations, resource_specs, rng)
 
     def chronicle(
@@ -123,20 +138,49 @@ class LLMBackend:
         resolution_lines: List[str],
         societies: Dict[str, Society],
     ) -> str:
+        if self.mode == "cli" and self.cli_tool:
+            prompt = self._chronicle_prompt(
+                epoch, events, plans, resolution_lines, societies
+            )
+            text = self._query_cli(prompt)
+            if text:
+                self.stats["llm_chronicle"] += 1
+                return self._clean_prose(text)
+        self.stats["fallback_chronicle"] += 1
+        return self._fallback_chronicle(
+            epoch, events, plans, resolution_lines, societies
+        )
+
+    @staticmethod
+    def _fallback_chronicle(
+        epoch: int,
+        events: List[OpenEvent],
+        plans: List[OpenPlan],
+        resolution_lines: List[str],
+        societies: Dict[str, Society],
+    ) -> str:
         lines = [f"【人工历史 第 {epoch} 纪】"]
         for event in events:
-            lines.append(f"事件：{event.name}。{event.description}")
+            lines.append(f"本纪，{event.name}。{event.description}")
+        intentions = []
         for plan in plans:
             actor = societies.get(plan.actor_id)
             actor_name = actor.name if actor else plan.actor_id
-            lines.append(f"{actor_name}提出《{plan.title}》，目标是{plan.objective}。")
-        lines.extend(resolution_lines)
+            intentions.append(
+                f"{actor_name}提出《{plan.title}》，意在{plan.objective}"
+            )
+        if intentions:
+            lines.append("与此同时，" + "；".join(intentions) + "。")
+        if resolution_lines:
+            lines.append("其后，" + "".join(resolution_lines))
         alive = [item.name for item in societies.values() if item.is_alive]
         if alive:
-            lines.append(f"纪末仍存续的社会有：{'、'.join(alive)}。未来没有预定方向。")
+            lines.append(
+                f"纪末，{'、'.join(alive)}仍在延续。此后的道路尚未写定。"
+            )
         else:
             lines.append("纪末已不存在可持续延续的社会，历史在此终止。")
-        return "\n".join(lines)
+        return "\n\n".join(lines)
 
     def _heuristic_plan(
         self,
@@ -538,10 +582,19 @@ class LLMBackend:
         commands = {
             "claude": ["claude", "-p", prompt],
             "codex": ["codex", "exec", prompt],
-            "agy": ["agy", "-p", prompt],
+            "agy": [
+                "agy",
+                "--model",
+                self.AGY_MODEL,
+                "--disable-slash-commands",
+                "-p",
+                prompt,
+            ],
         }
         try:
-            result = subprocess.run(commands[self.cli_tool], capture_output=True, text=True, timeout=40)
+            result = subprocess.run(
+                commands[self.cli_tool], capture_output=True, text=True, timeout=120
+            )
         except (OSError, subprocess.TimeoutExpired):
             return None
         return result.stdout.strip() if result.returncode == 0 else None
@@ -551,7 +604,7 @@ class LLMBackend:
         if not raw:
             return None
         try:
-            payload = json.loads(raw)
+            payload = LLMBackend._parse_json_object(raw)
             return OpenPlan(
                 actor_id,
                 payload["title"],
@@ -567,9 +620,39 @@ class LLMBackend:
         if not raw:
             return None
         try:
-            return OpenEvent(**json.loads(raw))
+            return OpenEvent(**LLMBackend._parse_json_object(raw))
         except (TypeError, ValueError, json.JSONDecodeError):
             return None
+
+    @staticmethod
+    def _parse_json_object(raw: str) -> Dict:
+        text = raw.strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            text = "\n".join(lines).strip()
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start < 0 or end <= start:
+                raise
+            payload = json.loads(text[start : end + 1])
+        if not isinstance(payload, dict):
+            raise TypeError("LLM output must be a JSON object")
+        return payload
+
+    @staticmethod
+    def _clean_prose(raw: str) -> str:
+        text = raw.strip()
+        if text.startswith("```") and text.endswith("```"):
+            lines = text.splitlines()[1:-1]
+            text = "\n".join(lines).strip()
+        return text
 
     @staticmethod
     def _plan_prompt(
@@ -593,12 +676,53 @@ class LLMBackend:
             "recent_history": list(recent_history),
         }
         return (
-            "你是开放式人工历史模拟中的自主社会。根据状态提出一个中文计划。"
+            "你是开放式人工历史模拟中一个独立的社会 Agent，只代表 actor，不代表其他社会。"
+            "把 actor.traits 视为长期性格，把其地点、库存、知识和组织视为自身处境。"
+            "你的选择应延续自身经历与立场，不要为了与其他社会显得不同而随机表演，也不要替其他社会统筹。"
+            "根据状态提出一个中文计划。"
             "不要套用现实科技树，也不要宣称结果已经成功。步骤使用物理 DSL："
             "acquire, transform, construct, relocate, research, communicate, organize。"
-            "它们不是历史行动菜单。只输出 JSON，字段为 title, objective, assumptions, steps；"
-            "每个 step 含 operation, parameters, rationale。世界状态：\n"
+            "它们不是历史行动菜单。可以创造任意目标，但必须组合为一至六个可执行步骤。"
+            "只输出 JSON，字段为 title, objective, assumptions, steps；每个 step 含 operation, parameters, rationale。"
+            "parameters 必须严格服从以下结构之一："
+            "acquire={resources:{resource_id:正数}}；"
+            "transform={inputs:{resource_id:正数},outputs:{resource_id:正数},required_capabilities:[字符串],risks:[风险]}；"
+            "construct={structure_id:字符串,name:字符串,materials:{resource_id:正数},effects:{允许效果:0至2},required_capabilities:[字符串],risks:[风险]}，"
+            "允许效果仅为 acquire_efficiency, transport_capacity, hazard_resistance, research_efficiency, carrying_capacity；"
+            "relocate={destination_id:字符串,population:正数,cargo:{resource_id:正数}}；"
+            "research={effort:正数,materials:{resource_id:正数},knowledge:{name:字符串,description:字符串,prerequisites:[知识id],observations:[可检验观察],capabilities:[字符串],risks:[风险]}}；"
+            "communicate={target_society_id:字符串,knowledge_ids:[知识id]}；"
+            "organize={organization_id:字符串,name:字符串,purpose:字符串,members:正数,rules:[字符串],effects:{允许效果:0至2},materials:{resource_id:正数},risks:[风险]}，"
+            "组织效果仅为 coordination, knowledge_retention, distribution, conflict_pressure。"
+            "风险结构为 {name,probability,effect,magnitude,resource_id?}，probability 在0至0.75之间，"
+            "effect 仅为 population_loss, resource_loss, environment_damage, organization_strain。"
+            "只能引用世界状态中存在的资源、地点、社会、知识和能力标识；新知识名称、假说和组织可以自由提出。世界状态：\n"
             + json.dumps(state, ensure_ascii=False, sort_keys=True)
+        )
+
+    @staticmethod
+    def _chronicle_prompt(
+        epoch: int,
+        events: List[OpenEvent],
+        plans: List[OpenPlan],
+        resolution_lines: List[str],
+        societies: Dict[str, Society],
+    ) -> str:
+        facts = {
+            "epoch": epoch,
+            "events": [public_dict(item) for item in events],
+            "plans": [public_dict(item) for item in plans],
+            "resolutions": resolution_lines,
+            "end_state": [public_dict(item) for item in societies.values()],
+        }
+        return (
+            "你是人工世界的史家。请把以下已经由物理引擎裁定的事实写成可读性好的中文历史书正文。"
+            "第一行用【第N纪：简短纪名】作标题，其后写三至五段连贯叙事。"
+            "先交代环境变化，再叙述各社会为何行动、行动如何受阻或完成，最后写本纪留下的局势。"
+            "语言清楚、克制、有历史感，不用项目符号，不逐字段抄写，不写成运行日志。"
+            "不得添加输入中没有的人物、因果、成果、伤亡、技术或事件；提案不得写成已经实现，"
+            "只有 resolutions 中确认完成的事情才能作为结果。不要评价这是游戏或模拟器。只输出正文。事实：\n"
+            + json.dumps(facts, ensure_ascii=False, sort_keys=True)
         )
 
     @staticmethod
@@ -615,7 +739,8 @@ class LLMBackend:
             "recent_history": list(recent_history),
         }
         return (
-            "提出一个没有预设类别的中文世界事件，只输出 JSON。字段必须为 name, description, "
+            "你是独立于各社会的环境过程 Agent。你不服务任何社会目标，只根据地点属性、物质存量与既往变化，"
+            "提出一个有物理原因且没有预设类别的中文世界事件。只输出 JSON。字段必须为 name, description, "
             "causes, duration, location_resource_deltas, location_property_deltas, external_inputs, "
             "external_outputs。资源变化必须满足质量守恒，跨模拟边界的物质必须显式记入 input 或 output。"
             "不要从灾害清单选择。世界状态：\n"

@@ -38,19 +38,21 @@ World state + 动态 knowledge graph + 中文编年记录
 
 ## 运行
 
-使用确定性离线 planner：
+默认调用本机已登录的 LLM CLI。每个社会由一次独立的 Agent 调用根据自身性格、资源、地点、知识和历史提出计划，环境 Agent 另行提出开放事件，史家 Agent 再把结算事实写成历史书体中文记录：
 
 ```bash
 python3 main.py 12 --seed 42
 ```
 
-显式调用本机已登录的 LLM CLI：
+需要完全按 seed 重放时，显式改用确定性离线 planner：
 
 ```bash
-python3 main.py 12 --seed 42 --planner cli
+python3 main.py 12 --seed 42 --planner heuristic
 ```
 
-`heuristic` 模式的提案和世界结算共用本地 `random.Random(seed)`，相同 seed 会得到完全相同的状态与中文记录。`cli` 模式中的模型提案本身不保证确定性，但每一纪的 `EpochRecord` 都保留原始 `OpenPlan` 与 `OpenEvent`；把这些提案作为 replay 输入时，compiler 和 WorldEngine 的结算仍然是确定性的。第一版尚未提供把 replay tape 写入文件的 CLI。
+默认 `cli` 模式优先使用 `agy` 的 `gemini-3.7-flash-high`，随后才检测 `codex` 与 `claude`。LLM 提案本身不固定，所以即使使用相同 seed，两次完整历史通常也会不同。确定性只属于裁定层：给定同一世界状态、同一组提案和同一 seed，compiler 与 `WorldEngine` 必须得到相同后果。模型不能直接修改世界。无可用 CLI 或某次输出无法解析时，该项会回退到离线 planner，并在运行结束时如实报告调用数量。
+
+`heuristic` 模式的提案和世界结算共用本地 `random.Random(seed)`，因此相同 seed 会得到完全相同的状态与中文记录。每一纪的 `EpochRecord` 都保留原始 `OpenPlan` 与 `OpenEvent`；第一版尚未提供把这些提案写入 replay tape 文件的 CLI。
 
 ## 第一版边界
 

@@ -28,7 +28,7 @@ class SimulationEngine:
     def __init__(
         self,
         seed: Optional[int] = None,
-        planner_mode: str = "heuristic",
+        planner_mode: str = "cli",
         backend: Optional[LLMBackend] = None,
     ):
         self.seed = 0 if seed is None else seed

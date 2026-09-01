@@ -19,7 +19,7 @@ def main() -> None:
     historical_matches = []
 
     for seed in seeds:
-        engine = SimulationEngine(seed=seed)
+        engine = SimulationEngine(seed=seed, planner_mode="heuristic")
         engine.run(args.epochs)
         signatures.add(engine.path_signature())
         knowledge = {node.name for node in engine.knowledge_graph.nodes.values()}

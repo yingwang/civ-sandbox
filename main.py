@@ -37,8 +37,8 @@ def main() -> None:
     parser.add_argument(
         "--planner",
         choices=("heuristic", "cli"),
-        default="heuristic",
-        help="计划与事件提案来源；heuristic 可完全按 seed 重放",
+        default="cli",
+        help="计划、事件与纪事来源；默认 cli，heuristic 可完全按 seed 重放",
     )
     args = parser.parse_args()
 
@@ -46,6 +46,16 @@ def main() -> None:
     locations, societies = engine.genesis()
     print(f"【创世】seed={args.seed}，生成 {len(locations)} 个地点与 {len(societies)} 个社会。")
     print("开局是智慧碳基生命场景，但资源、知识、制度和发展方向均未绑定现实历史。")
+    if engine.backend.cli_tool:
+        model = f" / {engine.backend.cli_model}" if engine.backend.cli_model else ""
+        print(
+            f"本机 LLM（{engine.backend.cli_tool}{model}）分别扮演各社会 Agent、环境 Agent 与史家 Agent；"
+            "WorldEngine 只裁定约束与后果。"
+        )
+    elif args.planner == "cli":
+        print("未检测到可用的本机 LLM CLI，本次将逐项回退到确定性离线规划器。")
+    else:
+        print("本次显式使用确定性离线规划器。")
 
     for _ in range(args.epochs):
         if not any(item.is_alive for item in engine.societies.values()):
@@ -53,6 +63,14 @@ def main() -> None:
         record = engine.step()
         print("\n" + record.chronicle_text)
         print_state(engine)
+
+    stats = engine.backend.stats
+    print(
+        "\n【生成说明】"
+        f"社会 Agent 的 LLM 计划 {stats['llm_plan']} 项，离线回退计划 {stats['heuristic_plan']} 项；"
+        f"环境 Agent 的 LLM 事件 {stats['llm_event']} 项，离线回退事件 {stats['heuristic_event']} 项；"
+        f"史家 Agent 的 LLM 纪事 {stats['llm_chronicle']} 纪，模板回退纪事 {stats['fallback_chronicle']} 纪。"
+    )
 
 
 if __name__ == "__main__":

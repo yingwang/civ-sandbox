@@ -187,8 +187,8 @@ class WorldConstraintTests(unittest.TestCase):
 
 class SimulationTests(unittest.TestCase):
     def test_same_seed_replays_exactly(self):
-        first = SimulationEngine(seed=73)
-        second = SimulationEngine(seed=73)
+        first = SimulationEngine(seed=73, planner_mode="heuristic")
+        second = SimulationEngine(seed=73, planner_mode="heuristic")
         first.run(14)
         second.run(14)
         self.assertEqual(first.state_snapshot(), second.state_snapshot())
@@ -197,7 +197,7 @@ class SimulationTests(unittest.TestCase):
         signatures = set()
         knowledge_names = []
         for seed in range(8):
-            engine = SimulationEngine(seed=seed)
+            engine = SimulationEngine(seed=seed, planner_mode="heuristic")
             engine.run(18)
             signatures.add(engine.path_signature())
             knowledge_names.extend(node.name for node in engine.knowledge_graph.nodes.values())
@@ -210,7 +210,7 @@ class SimulationTests(unittest.TestCase):
         outcomes = []
         society_counts = []
         for seed in (0, 2, 4, 10):
-            engine = SimulationEngine(seed=seed)
+            engine = SimulationEngine(seed=seed, planner_mode="heuristic")
             engine.run(120)
             outcomes.append(sum(item.is_alive for item in engine.societies.values()))
             society_counts.append(len(engine.societies))
