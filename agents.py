@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import math
 import random
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from llm_backend import LLMBackend
-from models import ActionType, AgentIntent, Civilization, CivilizationView, DiplomaticStatus
+from models import ActionType, AgentIntent, Civilization, CivilizationView, DiplomaticStatus, Region
 
 
 class CivilizationAgent:
     """Decision policy for one civilization.
 
-    LLM mode produces intentions only. If no model is available or its output is
-    invalid, a state-aware heuristic policy is used as a deterministic fallback.
+    LLM mode produces intentions only. The heuristic fallback uses utility scoring:
+    needs, ethos, explicit goals, geography, diplomatic tension and seeded exploration
+    all contribute. No single rule can permanently short-circuit the policy.
     """
 
     def __init__(self, backend: LLMBackend, rng: random.Random):
@@ -33,6 +35,7 @@ class CivilizationAgent:
                 "name": c.name,
                 "population": c.population,
                 "relationship": me.relationships.get(c.id, DiplomaticStatus.NEUTRAL.value),
+                "tension": round(me.tensions.get(c.id, 0.0), 1),
             }
             for c in view.known_civilizations
             if c.is_alive and c.id != me.id
@@ -84,35 +87,184 @@ Important memories: {[m.summary for m in me.memory[:6]]}
     def _heuristic_decide(self, view: CivilizationView) -> AgentIntent:
         me = view.self_state
         others = [c for c in view.known_civilizations if c.is_alive and c.id != me.id]
-        food_pressure = me.food / max(1, me.population * 2)
-        aggressive = any(x in me.ethos for x in ("尚武", "勇猛", "征服", "以战"))
-        mercantile = any(x in me.ethos for x in ("通商", "农商", "善贾", "贸易"))
-        inventive = any(x in me.ethos for x in ("百工", "采石", "格物", "钻研", "构筑"))
+        region_map = {r.id: r for r in view.known_regions}
+        owned = [r for r in view.known_regions if r.controlled_by == me.id]
+        frontier = self._frontier_regions(owned, region_map)
 
-        if food_pressure < 1.15:
-            return self._intent(me, ActionType.CULTIVATE, "粮储接近人口消耗线，优先扩大粮食供给。")
+        food_ratio = me.food / max(1, me.population * 2)
+        scarcity = max(0.0, 1.45 - food_ratio)
+        aggressive = self._contains(me.ethos, ("尚武", "勇猛", "征服", "以战", "崇火"))
+        mercantile = self._contains(me.ethos, ("通商", "农商", "善贾", "贸易"))
+        inventive = self._contains(me.ethos, ("百工", "采石", "格物", "钻研", "构筑", "筑城"))
+        spiritual = self._contains(me.ethos, ("祭", "神", "图腾"))
 
-        hostile = [c for c in others if me.relationships.get(c.id) in {DiplomaticStatus.HOSTILE.value, DiplomaticStatus.WAR.value}]
-        if aggressive and hostile and self.rng.random() < 0.65:
-            target = min(hostile, key=lambda c: c.population)
-            return self._intent(me, ActionType.RAID, "敌对关系已经形成，尝试以军事行动夺取资源。", target.id)
+        goal_food = self._goal(me, ("粮", "生存", "仓"))
+        goal_land = self._goal(me, ("土地", "疆", "拓", "富饶"))
+        goal_resources = self._goal(me, ("资源", "矿", "自主"))
+        goal_trade = self._goal(me, ("商", "贸易", "财富"))
+        goal_peace = self._goal(me, ("和平", "稳定", "盟"))
+        goal_tech = self._goal(me, ("技术", "科技", "百工", "创新"))
 
-        if inventive and self.rng.random() < 0.55:
-            return self._intent(me, ActionType.INVENT, "本族文化重视技艺，投资新技术具有长期收益。")
+        max_tension = max((me.tensions.get(c.id, 0.0) for c in others), default=0.0)
+        hostile_count = sum(
+            me.relationships.get(c.id) in {DiplomaticStatus.HOSTILE.value, DiplomaticStatus.WAR.value}
+            for c in others
+        )
 
-        if mercantile and others and self.rng.random() < 0.65:
-            candidates = [c for c in others if me.relationships.get(c.id) != DiplomaticStatus.WAR.value]
-            if candidates:
-                target = self.rng.choice(candidates)
-                return self._intent(me, ActionType.TRADE, "通过互市获得财富，并改善外交关系。", target.id)
+        scores: Dict[ActionType, float] = {
+            ActionType.CULTIVATE: 16 + scarcity * 48 + goal_food * 18,
+            ActionType.INVENT: 14 + inventive * 24 + goal_tech * 30 + goal_resources * 8 + min(18, me.ore / 10),
+            ActionType.EXPAND: 12 + goal_land * 24 + goal_resources * 8 + min(28, len(frontier) * 11) + (6 if food_ratio > 1.0 else -6),
+            ActionType.TRADE: 11 + mercantile * 27 + goal_trade * 25 + (6 if me.wealth < 150 else 0),
+            ActionType.TREATY: 6 + goal_peace * 30 + hostile_count * 16 + max_tension * 0.16 + me.war_exhaustion * 0.70,
+            ActionType.RAID: 3 + aggressive * 28 + goal_land * 16 + max_tension * 0.48 + scarcity * 9 - me.war_exhaustion * 1.10,
+            ActionType.WORSHIP: 7 + spiritual * 18,
+        }
 
-        if others and self.rng.random() < 0.22:
-            target = self.rng.choice(others)
-            return self._intent(me, ActionType.TREATY, "外部风险上升，建立稳定关系可降低战争成本。", target.id)
+        if me.ore < 25:
+            scores[ActionType.INVENT] -= 35
+        if not frontier:
+            scores[ActionType.EXPAND] -= 20
+            if goal_land or aggressive:
+                scores[ActionType.RAID] += 12
+        if not others:
+            scores[ActionType.TRADE] = scores[ActionType.TREATY] = scores[ActionType.RAID] = -100
+        if aggressive and max_tension < 45:
+            scores[ActionType.RAID] -= 25
+        elif not aggressive and max_tension < 55:
+            scores[ActionType.RAID] -= 45
+        if food_ratio < 0.75:
+            scores[ActionType.CULTIVATE] += 30
 
-        if self.rng.random() < 0.55:
-            return self._intent(me, ActionType.EXPAND, "人口增长需要新的定居空间与资源来源。")
-        return self._intent(me, ActionType.WORSHIP, "通过公共仪式强化共同体认同与社会凝聚。")
+        # Seeded exploration prevents deterministic lock-in while preserving replayability.
+        for action in scores:
+            scores[action] += self.rng.uniform(0.0, 7.0)
+
+        action = self._sample_action(scores, temperature=13.0)
+
+        if action == ActionType.RAID:
+            target = self._select_raid_target(me, others, region_map)
+            if target is None:
+                action = ActionType.CULTIVATE
+            else:
+                return self._intent(
+                    me, action,
+                    f"综合粮食、领土目标与外交紧张度后，战争收益最高；当前对{target.name}紧张度为{me.tensions.get(target.id, 0):.0f}。",
+                    target.id,
+                    metadata={"utility": round(scores[ActionType.RAID], 2)},
+                )
+        if action == ActionType.TRADE:
+            target = self._select_trade_target(me, others)
+            if target is not None:
+                return self._intent(
+                    me, action, "贸易符合本族经济取向，并可降低与邻邦的摩擦。",
+                    target.id, metadata={"utility": round(scores[action], 2)},
+                )
+            action = ActionType.CULTIVATE
+        if action == ActionType.TREATY:
+            target = self._select_treaty_target(me, others)
+            if target is not None:
+                return self._intent(
+                    me, action, "当前外部风险使外交缓和的边际收益上升。",
+                    target.id, metadata={"utility": round(scores[action], 2)},
+                )
+            action = ActionType.CULTIVATE
+        if action == ActionType.EXPAND:
+            target_region = self._select_frontier(me, frontier)
+            if target_region is not None:
+                return self._intent(
+                    me, action, f"扩张可获得{target_region.name}的地力与矿藏。",
+                    target_region_id=target_region.id, metadata={"utility": round(scores[action], 2)},
+                )
+            action = ActionType.CULTIVATE
+
+        rationale = {
+            ActionType.CULTIVATE: "当前粮食安全的效用高于其他战略选择。",
+            ActionType.INVENT: "文化取向、明确目标与矿石储备共同提高了技术投资收益。",
+            ActionType.WORSHIP: "公共仪式有助于维持共同体凝聚与财富循环。",
+        }.get(action, "综合当前状态选择效用最高的行动。")
+        return self._intent(me, action, rationale, metadata={"utility": round(scores[action], 2)})
+
+    def _sample_action(self, scores: Dict[ActionType, float], temperature: float) -> ActionType:
+        maximum = max(scores.values())
+        weighted = []
+        total = 0.0
+        for action, score in scores.items():
+            weight = math.exp((score - maximum) / temperature)
+            weighted.append((action, weight))
+            total += weight
+        roll = self.rng.random() * total
+        upto = 0.0
+        for action, weight in weighted:
+            upto += weight
+            if roll <= upto:
+                return action
+        return max(scores, key=scores.get)
+
+    def _frontier_regions(self, owned: List[Region], region_map: Dict[str, Region]) -> List[Region]:
+        ids = set()
+        for region in owned:
+            for rid in region.neighbors:
+                candidate = region_map[rid]
+                if candidate.controlled_by is None:
+                    ids.add(rid)
+        return [region_map[rid] for rid in sorted(ids)]
+
+    def _select_frontier(self, me: Civilization, frontier: List[Region]) -> Optional[Region]:
+        if not frontier:
+            return None
+        wants_food = self._goal(me, ("粮", "富饶", "土地"))
+        wants_resources = self._goal(me, ("资源", "矿", "技术"))
+        return max(
+            frontier,
+            key=lambda r: (
+                r.fertility * (1.5 if wants_food else 1.0)
+                + r.mineral_richness * (1.5 if wants_resources else 1.0),
+                r.id,
+            ),
+        )
+
+    def _select_raid_target(
+        self, me: Civilization, others: List[Civilization], region_map: Dict[str, Region]
+    ) -> Optional[Civilization]:
+        candidates = [c for c in others if me.relationships.get(c.id) != DiplomaticStatus.ALLIED.value]
+        if not candidates:
+            candidates = others
+        if not candidates:
+            return None
+        def score(c: Civilization) -> float:
+            region = region_map[c.home_region_id]
+            tension = me.tensions.get(c.id, 0.0)
+            weakness = max(-20.0, min(20.0, (me.population - c.population) * 0.35))
+            value = region.fertility * 2.2 + region.mineral_richness
+            ally_penalty = 45 if me.relationships.get(c.id) == DiplomaticStatus.ALLIED.value else 0
+            return tension + weakness + value - ally_penalty
+        return max(candidates, key=lambda c: (score(c), c.id))
+
+    def _select_trade_target(self, me: Civilization, others: List[Civilization]) -> Optional[Civilization]:
+        candidates = [c for c in others if me.relationships.get(c.id) != DiplomaticStatus.WAR.value]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda c: (me.tensions.get(c.id, 0.0), -c.wealth, c.id))
+
+    def _select_treaty_target(self, me: Civilization, others: List[Civilization]) -> Optional[Civilization]:
+        if not others:
+            return None
+        return max(
+            others,
+            key=lambda c: (
+                me.tensions.get(c.id, 0.0)
+                + (30 if me.relationships.get(c.id) in {DiplomaticStatus.HOSTILE.value, DiplomaticStatus.WAR.value} else 0),
+                c.id,
+            ),
+        )
+
+    def _goal(self, me: Civilization, keywords: Tuple[str, ...]) -> int:
+        text = " ".join(me.goals)
+        return int(any(k in text for k in keywords))
+
+    def _contains(self, text: str, keywords: Tuple[str, ...]) -> int:
+        return int(any(k in text for k in keywords))
 
     def _intent(
         self,
@@ -120,13 +272,17 @@ Important memories: {[m.summary for m in me.memory[:6]]}
         action: ActionType,
         rationale: str,
         target_civ_id: Optional[str] = None,
+        target_region_id: Optional[str] = None,
+        metadata: Optional[dict] = None,
     ) -> AgentIntent:
         return AgentIntent(
             civilization_id=me.id,
             action_type=action,
             target_civilization_id=target_civ_id,
+            target_region_id=target_region_id,
             edict=f"{me.leader_name}下令施行【{action.value}】。",
             rationale=rationale,
+            metadata=metadata or {},
         )
 
 

@@ -65,6 +65,8 @@ class Civilization:
     techs: List[str] = field(default_factory=list)
     customs: List[str] = field(default_factory=list)
     relationships: Dict[str, str] = field(default_factory=dict)
+    tensions: Dict[str, float] = field(default_factory=dict)
+    war_exhaustion: float = 0.0
     is_alive: bool = True
     home_region_id: str = ""
     goals: List[str] = field(default_factory=list)
@@ -75,7 +77,6 @@ class Civilization:
         self.memory = sorted(self.memory, key=lambda m: (m.salience, m.epoch), reverse=True)[:max_items]
 
 
-# Backward-compatible name used by the earlier experimental engines.
 Tribe = Civilization
 
 
