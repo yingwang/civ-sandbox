@@ -1,71 +1,53 @@
-import sys
-import time
-from engine import SimulationEngine
+from __future__ import annotations
+
+import argparse
+
+from engine import WorldEngine
 
 
-def print_banner():
-    print("=" * 60)
-    print("       📜 大模型自主推演·蛮荒文明演化沙盒 (Civ-Sandbox) 📜       ")
-    print("=" * 60)
+def print_status(engine: WorldEngine) -> None:
+    print("\n【当前文明概况】")
+    print(f"{'文明':<10}{'人口':<8}{'粮食':<8}{'矿石':<8}{'财富':<8}科技")
+    print("-" * 72)
+    for c in engine.civilizations:
+        techs = "、".join(c.techs) if c.techs else "暂无"
+        life = "" if c.is_alive else "（覆亡）"
+        print(f"{c.name + life:<10}{c.population:<8}{c.food:<8}{c.ore:<8}{c.wealth:<8}{techs}")
 
 
-def print_tribe_status(engine: SimulationEngine):
-    print("\n【当前各部族概况】")
-    print(f"{'部族':<10}{'首领':<12}{'人口':<8}{'粮草':<8}{'矿石':<8}{'科技发明'}")
-    print("-" * 60)
-    for t in engine.tribes:
-        if t.is_alive:
-            tech_str = "、".join(t.techs) if t.techs else "暂无"
-            print(f"{t.name:<10}{t.leader_title + ' ' + t.leader_name:<12}{t.population:<8}{t.food:<8}{t.ore:<8}{tech_str}")
-        else:
-            print(f"{t.name:<10}{'（已覆灭）':<12}{'0':<8}{'0':<8}{'0':<8}{'宗庙倾覆'}")
-    print("-" * 60)
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Civ-Sandbox: agent intentions + deterministic world simulation")
+    parser.add_argument("epochs", nargs="?", type=int, default=8)
+    parser.add_argument("--seed", type=int, default=42, help="replay seed")
+    parser.add_argument("--llm", choices=["off", "auto", "claude", "agy", "codex"], default="off")
+    args = parser.parse_args()
 
+    engine = WorldEngine(seed=args.seed, llm_mode=args.llm)
+    regions, civs = engine.genesis()
 
-def main():
-    print_banner()
-    engine = SimulationEngine()
-    regions, tribes = engine.genesis()
-
-    print("\n【混沌初开·山河创生】")
+    print("=" * 72)
+    print("Civ-Sandbox · LLM intentions, deterministic consequences")
+    print(f"seed={args.seed} | llm={args.llm} | model_cli={engine.backend.cli_tool or 'heuristic'}")
+    print("=" * 72)
+    print("\n【世界创生】")
     for r in regions:
-        print(f"· 地域【{r.name}】（{r.terrain.value}）- 沃度: {r.fertility}/10, 矿藏: {r.mineral_richness}/10")
+        print(f"· {r.name}: {r.terrain.value}, fertility={r.fertility}, minerals={r.mineral_richness}")
+    print("\n【文明】")
+    for c in civs:
+        print(f"· {c.name} / {c.leader_name}: {c.ethos}; goals={c.goals}")
 
-    print("\n【三方始祖部落定居】")
-    for t in tribes:
-        print(f"· 【{t.name}】奉【{t.totem}】为图腾，首领【{t.leader_name}】，性格：{t.ethos}")
-
-    epochs_to_run = 5
-    if len(sys.argv) > 1:
-        try:
-            epochs_to_run = int(sys.argv[1])
-        except ValueError:
-            pass
-
-    print(f"\n即将自主演化推演 {epochs_to_run} 个纪元……\n")
-
-    for _ in range(epochs_to_run):
+    for _ in range(args.epochs):
         record = engine.step()
-        print("*" * 60)
-        print(f"       >>> 纪元推演：第 {record.epoch_num} 载 <<<       ")
-        print("*" * 60)
-        
-        print("\n【各族领袖决断诏令】")
-        for d in record.actions:
-            print(f"· {d.edict}")
-            print(f"  └─ 密谋内由：{d.rationale}")
-
-        print("\n【天道仲裁与变故】")
-        for res in record.resolutions:
-            print(f"· {res}")
-
-        print_tribe_status(engine)
-        print("\n" + record.chronicle_text + "\n")
-        time.sleep(0.5)
-
-    print("=" * 60)
-    print("推演完成。诸族兴衰已录入青史。")
-    print("=" * 60)
+        print(f"\n{'*' * 28} 第 {record.epoch_num} 纪 {'*' * 28}")
+        print("【Agent Intentions】")
+        for intent in record.actions:
+            target = f" -> {intent.target_civilization_id}" if intent.target_civilization_id else ""
+            print(f"· {intent.civilization_id}: {intent.action_type.name}{target} | {intent.rationale}")
+        print("【World Resolution】")
+        for line in record.resolutions:
+            print(f"· {line}")
+        print_status(engine)
+        print("\n" + record.chronicle_text)
 
 
 if __name__ == "__main__":
