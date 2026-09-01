@@ -1,53 +1,58 @@
-from __future__ import annotations
+"""Chinese CLI for the open-ended artificial-history simulator."""
 
 import argparse
 
-from engine import WorldEngine
+from engine import SimulationEngine
 
 
-def print_status(engine: WorldEngine) -> None:
-    print("\n【当前文明概况】")
-    print(f"{'文明':<10}{'人口':<8}{'粮食':<8}{'矿石':<8}{'财富':<8}科技")
-    print("-" * 72)
-    for c in engine.civilizations:
-        techs = "、".join(c.techs) if c.techs else "暂无"
-        life = "" if c.is_alive else "（覆亡）"
-        print(f"{c.name + life:<10}{c.population:<8}{c.food:<8}{c.ore:<8}{c.wealth:<8}{techs}")
+def print_state(engine: SimulationEngine) -> None:
+    print("\n【纪末状态】")
+    for society in engine.societies.values():
+        status = "存续" if society.is_alive else "灭绝"
+        print(
+            f"{society.name}：{status}，种群 {society.population}，"
+            f"地点 {engine.locations[society.location_id].name}，"
+            f"知识 {len(society.knowledge)}，组织 {len(society.organizations)}"
+        )
+    if engine.knowledge_graph.nodes:
+        print("动态知识图谱：")
+        for node in engine.knowledge_graph.nodes.values():
+            dependencies = (
+                "、".join(
+                    engine.knowledge_graph.nodes[item].name
+                    for item in node.prerequisites
+                    if item in engine.knowledge_graph.nodes
+                )
+                if node.prerequisites
+                else "无前置节点"
+            )
+            risks = "、".join(item.name for item in node.risks) if node.risks else "尚无已知风险"
+            print(f"  {node.name}，依赖：{dependencies}，风险：{risks}")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Civ-Sandbox: agent intentions + deterministic world simulation")
-    parser.add_argument("epochs", nargs="?", type=int, default=8)
-    parser.add_argument("--seed", type=int, default=42, help="replay seed")
-    parser.add_argument("--llm", choices=["off", "auto", "claude", "agy", "codex"], default="off")
+    parser = argparse.ArgumentParser(description="开放式人工历史模拟器")
+    parser.add_argument("epochs", nargs="?", type=int, default=8, help="推演纪数")
+    parser.add_argument("--seed", type=int, default=42, help="确定性随机种子")
+    parser.add_argument(
+        "--planner",
+        choices=("heuristic", "cli"),
+        default="heuristic",
+        help="计划与事件提案来源；heuristic 可完全按 seed 重放",
+    )
     args = parser.parse_args()
 
-    engine = WorldEngine(seed=args.seed, llm_mode=args.llm)
-    regions, civs = engine.genesis()
-
-    print("=" * 72)
-    print("Civ-Sandbox · LLM intentions, deterministic consequences")
-    print(f"seed={args.seed} | llm={args.llm} | model_cli={engine.backend.cli_tool or 'heuristic'}")
-    print("=" * 72)
-    print("\n【世界创生】")
-    for r in regions:
-        print(f"· {r.name}: {r.terrain.value}, fertility={r.fertility}, minerals={r.mineral_richness}")
-    print("\n【文明】")
-    for c in civs:
-        print(f"· {c.name} / {c.leader_name}: {c.ethos}; goals={c.goals}")
+    engine = SimulationEngine(seed=args.seed, planner_mode=args.planner)
+    locations, societies = engine.genesis()
+    print(f"【创世】seed={args.seed}，生成 {len(locations)} 个地点与 {len(societies)} 个社会。")
+    print("开局是智慧碳基生命场景，但资源、知识、制度和发展方向均未绑定现实历史。")
 
     for _ in range(args.epochs):
+        if not any(item.is_alive for item in engine.societies.values()):
+            break
         record = engine.step()
-        print(f"\n{'*' * 28} 第 {record.epoch_num} 纪 {'*' * 28}")
-        print("【Agent Intentions】")
-        for intent in record.actions:
-            target = f" -> {intent.target_civilization_id}" if intent.target_civilization_id else ""
-            print(f"· {intent.civilization_id}: {intent.action_type.name}{target} | {intent.rationale}")
-        print("【World Resolution】")
-        for line in record.resolutions:
-            print(f"· {line}")
-        print_status(engine)
         print("\n" + record.chronicle_text)
+        print_state(engine)
 
 
 if __name__ == "__main__":

@@ -1,151 +1,242 @@
-from __future__ import annotations
+"""Domain-neutral state and plan models for the artificial-history simulator."""
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional, Set
 
 
-class TerrainType(str, Enum):
-    PLAINS = "平原沃土"
-    RIVERLAND = "大泽水系"
-    HIGHLAND = "高山荒原"
-    COASTAL = "沿海孤岛"
-    FOREST = "密林山谷"
-    DESERT = "大漠戈壁"
+class PrimitiveKind(str, Enum):
+    """Small, domain-neutral operations understood by the world engine."""
 
-
-class ActionType(str, Enum):
-    CULTIVATE = "开垦农桑"
-    EXPAND = "迁徙筑城"
-    TRADE = "互通有无"
-    RAID = "起兵征伐"
-    INVENT = "钻研百工"
-    WORSHIP = "祭祀通神"
-    TREATY = "结盟立约"
-
-
-class DiplomaticStatus(str, Enum):
-    ALLIED = "同盟"
-    FRIENDLY = "交好"
-    NEUTRAL = "中立"
-    HOSTILE = "敌对"
-    WAR = "交战"
+    ACQUIRE = "acquire"
+    TRANSFORM = "transform"
+    CONSTRUCT = "construct"
+    RELOCATE = "relocate"
+    RESEARCH = "research"
+    COMMUNICATE = "communicate"
+    ORGANIZE = "organize"
 
 
 @dataclass
-class Region:
+class ResourceSpec:
     id: str
     name: str
-    terrain: TerrainType
-    fertility: int
-    mineral_richness: int
-    controlled_by: Optional[str] = None
-    neighbors: List[str] = field(default_factory=list)
+    tags: Set[str]
+    mass_per_unit: float = 1.0
 
 
 @dataclass
-class MemoryEntry:
-    epoch: int
-    summary: str
-    salience: int = 1
+class Route:
+    destination_id: str
+    distance: float
+    carrying_cost: float = 1.0
 
 
 @dataclass
-class Civilization:
+class Location:
     id: str
     name: str
-    leader_title: str
-    leader_name: str
-    totem: str
-    ethos: str
+    properties: Dict[str, float]
+    stocks: Dict[str, float]
+    capacities: Dict[str, float]
+    routes: List[Route] = field(default_factory=list)
+
+
+@dataclass
+class Structure:
+    id: str
+    name: str
+    owner_id: str
+    location_id: str
+    effects: Dict[str, float]
+    durability: float = 1.0
+
+
+@dataclass
+class Organization:
+    id: str
+    name: str
+    purpose: str
+    members: int
+    rules: List[str]
+    effects: Dict[str, float]
+
+
+@dataclass
+class RiskSpec:
+    name: str
+    probability: float
+    effect: str
+    magnitude: float
+    resource_id: Optional[str] = None
+
+
+@dataclass
+class KnowledgeProposal:
+    name: str
+    description: str
+    prerequisites: List[str]
+    observations: List[str]
+    capabilities: List[str]
+    risks: List[RiskSpec]
+
+
+@dataclass
+class KnowledgeNode:
+    id: str
+    name: str
+    description: str
+    discovered_by: str
+    discovered_epoch: int
+    prerequisites: List[str]
+    observations: List[str]
+    capabilities: List[str]
+    risks: List[RiskSpec]
+
+
+@dataclass
+class KnowledgeGraph:
+    nodes: Dict[str, KnowledgeNode] = field(default_factory=dict)
+
+    def add(self, node: KnowledgeNode) -> None:
+        missing = [item for item in node.prerequisites if item not in self.nodes]
+        if missing:
+            raise ValueError(f"knowledge prerequisites are missing: {missing}")
+        self.nodes[node.id] = node
+
+    def available_capabilities(self, knowledge_ids: Set[str]) -> Set[str]:
+        capabilities: Set[str] = set()
+        for knowledge_id in knowledge_ids:
+            node = self.nodes.get(knowledge_id)
+            if node:
+                capabilities.update(node.capabilities)
+        return capabilities
+
+
+@dataclass
+class Society:
+    id: str
+    name: str
+    species_profile: str
     population: int
-    food: int
-    ore: int
-    wealth: int
-    techs: List[str] = field(default_factory=list)
-    customs: List[str] = field(default_factory=list)
-    relationships: Dict[str, str] = field(default_factory=dict)
-    tensions: Dict[str, float] = field(default_factory=dict)
-    war_exhaustion: float = 0.0
+    location_id: str
+    inventory: Dict[str, float]
+    traits: Dict[str, float]
+    metabolic_needs: Dict[str, float] = field(default_factory=dict)
+    knowledge: Set[str] = field(default_factory=set)
+    organizations: Dict[str, Organization] = field(default_factory=dict)
     is_alive: bool = True
-    home_region_id: str = ""
-    goals: List[str] = field(default_factory=list)
-    memory: List[MemoryEntry] = field(default_factory=list)
-
-    def remember(self, epoch: int, summary: str, salience: int = 1, max_items: int = 12) -> None:
-        self.memory.append(MemoryEntry(epoch=epoch, summary=summary, salience=salience))
-        self.memory = sorted(self.memory, key=lambda m: (m.salience, m.epoch), reverse=True)[:max_items]
-
-
-Tribe = Civilization
 
 
 @dataclass
-class CivilizationView:
-    epoch: int
-    self_state: Civilization
-    home_region: Region
-    known_regions: List[Region]
-    known_civilizations: List[Civilization]
-    recent_events: List[str]
+class PlanStep:
+    """A planner-facing declaration using universal operations and open payloads."""
 
-
-@dataclass
-class AgentIntent:
-    civilization_id: str
-    action_type: ActionType
-    target_civilization_id: Optional[str] = None
-    target_region_id: Optional[str] = None
-    edict: str = ""
+    operation: str
+    parameters: Dict[str, Any]
     rationale: str = ""
-    priority: int = 1
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def tribe_id(self) -> str:
-        return self.civilization_id
-
-    @property
-    def target_tribe_id(self) -> Optional[str]:
-        return self.target_civilization_id
-
-
-TribeDecision = AgentIntent
 
 
 @dataclass
-class WorldEvent:
-    epoch: int
-    kind: str
-    text: str
-    actors: List[str] = field(default_factory=list)
-    data: Dict[str, Any] = field(default_factory=dict)
+class OpenPlan:
+    actor_id: str
+    title: str
+    objective: str
+    steps: List[PlanStep]
+    assumptions: List[str] = field(default_factory=list)
+
+
+@dataclass
+class OpenEvent:
+    """An untyped event proposal expressed as causal state changes."""
+
+    name: str
+    description: str
+    causes: List[str]
+    duration: int
+    location_resource_deltas: Dict[str, Dict[str, float]]
+    location_property_deltas: Dict[str, Dict[str, float]]
+    external_inputs: Dict[str, float] = field(default_factory=dict)
+    external_outputs: Dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
+class CompiledEvent:
+    id: str
+    source: OpenEvent
+
+
+@dataclass
+class EventProcess:
+    event: CompiledEvent
+    remaining_ticks: int
+
+
+@dataclass
+class Primitive:
+    kind: PrimitiveKind
+    parameters: Dict[str, Any]
+    labor: int
+    duration: int
+    risks: List[RiskSpec] = field(default_factory=list)
+
+
+@dataclass
+class CompiledPlan:
+    id: str
+    source: OpenPlan
+    primitives: List[Primitive]
+
+
+@dataclass
+class Project:
+    id: str
+    plan: CompiledPlan
+    primitive_index: int = 0
+    remaining_ticks: int = 0
+    started: bool = False
+    status: str = "queued"
+    failure_reason: Optional[str] = None
+
+
+@dataclass
+class Resolution:
+    plan_id: str
+    actor_id: str
+    status: str
+    summary: str
+    primitive: Optional[str] = None
+    side_effects: List[str] = field(default_factory=list)
 
 
 @dataclass
 class EpochRecord:
     epoch_num: int
-    disaster_event: Optional[str]
-    actions: List[AgentIntent]
-    resolutions: List[str]
+    events: List[OpenEvent]
+    plans: List[OpenPlan]
+    resolutions: List[Resolution]
     chronicle_text: str
-    events: List[WorldEvent] = field(default_factory=list)
-
-
-@dataclass
-class WorldState:
-    epoch: int = 0
-    regions: List[Region] = field(default_factory=list)
-    civilizations: List[Civilization] = field(default_factory=list)
-    history: List[EpochRecord] = field(default_factory=list)
-    seed: int = 0
 
     @property
-    def tribes(self) -> List[Civilization]:
-        return self.civilizations
+    def actions(self) -> List[OpenPlan]:
+        """Compatibility spelling for callers that displayed the old action list."""
+        return self.plans
 
-    def civilization_map(self) -> Dict[str, Civilization]:
-        return {c.id: c for c in self.civilizations}
 
-    def region_map(self) -> Dict[str, Region]:
-        return {r.id: r for r in self.regions}
+def public_dict(value: Any) -> Dict[str, Any]:
+    """Return a JSON-friendly dataclass dictionary with stable set ordering."""
+
+    raw = asdict(value)
+
+    def normalize(item: Any) -> Any:
+        if isinstance(item, set):
+            return sorted(item)
+        if isinstance(item, dict):
+            return {key: normalize(item[key]) for key in sorted(item)}
+        if isinstance(item, list):
+            return [normalize(child) for child in item]
+        if isinstance(item, Enum):
+            return item.value
+        return item
+
+    return normalize(raw)

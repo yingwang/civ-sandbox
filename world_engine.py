@@ -1,442 +1,724 @@
-from __future__ import annotations
+"""Deterministic resolution of compiled plans against physical world state."""
 
+import hashlib
+import math
 import random
-from typing import List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
-from agents import CivilizationAgent, HistorianAgent
-from llm_backend import LLMBackend
 from models import (
-    ActionType,
-    AgentIntent,
-    Civilization,
-    CivilizationView,
-    DiplomaticStatus,
-    EpochRecord,
-    Region,
-    TerrainType,
-    WorldEvent,
-    WorldState,
+    CompiledEvent,
+    CompiledPlan,
+    EventProcess,
+    KnowledgeGraph,
+    KnowledgeNode,
+    KnowledgeProposal,
+    Location,
+    Organization,
+    Primitive,
+    PrimitiveKind,
+    Project,
+    Resolution,
+    ResourceSpec,
+    RiskSpec,
+    Society,
+    Structure,
 )
 
 
+class FeasibilityError(ValueError):
+    pass
+
+
 class WorldEngine:
-    """Authoritative civilization simulator.
+    """The only component allowed to mutate simulated world state."""
 
-    Agents propose intentions. This engine alone mutates the WorldState. Given the
-    same seed, initial state and sequence of intents, transitions are reproducible.
-    """
-
-    TECH_TREE = {
-        "水车引灌": {"farm_mult": 1.25},
-        "铁犁牛耕": {"farm_mult": 1.35},
-        "冶铜铸兵": {"attack": 30},
-        "重甲战车": {"attack": 35},
-        "夯土城垣": {"defense": 45},
-        "观星历法": {"disaster_resistance": 0.5},
-        "草药医理": {"growth_mult": 1.2},
-        "造舟浮海": {"trade_mult": 1.3},
-        "成文法典": {"stability": 1},
+    PRIMITIVE_NAMES = {
+        PrimitiveKind.ACQUIRE: "取得资源",
+        PrimitiveKind.TRANSFORM: "转换资源",
+        PrimitiveKind.CONSTRUCT: "建造结构",
+        PrimitiveKind.RELOCATE: "迁移种群",
+        PrimitiveKind.RESEARCH: "检验知识",
+        PrimitiveKind.COMMUNICATE: "传播信息",
+        PrimitiveKind.ORGANIZE: "组织协作",
     }
 
-    DISASTERS = [
-        ("大旱", 0.16),
-        ("洪水", 0.14),
-        ("极寒", 0.12),
-        ("蝗灾", 0.15),
-        ("丰年", -0.10),
-    ]
+    def __init__(
+        self,
+        rng: random.Random,
+        resource_specs: Dict[str, ResourceSpec],
+        locations: Dict[str, Location],
+        societies: Dict[str, Society],
+        knowledge_graph: Optional[KnowledgeGraph] = None,
+    ):
+        self.rng = rng
+        self.resource_specs = resource_specs
+        self.locations = locations
+        self.societies = societies
+        self.knowledge_graph = knowledge_graph or KnowledgeGraph()
+        self.structures: Dict[str, Structure] = {}
+        self.projects: Dict[str, Project] = {}
+        self.events: Dict[str, EventProcess] = {}
 
-    def __init__(self, seed: int = 0, llm_mode: str = "off"):
-        self.seed = seed
-        self.rng = random.Random(seed)
-        self.backend = LLMBackend(mode=llm_mode)
-        self.agent = CivilizationAgent(self.backend, self.rng)
-        self.historian = HistorianAgent(self.backend)
-        self.state = WorldState(seed=seed)
-
-    @property
-    def epoch(self) -> int:
-        return self.state.epoch
-
-    @property
-    def regions(self) -> List[Region]:
-        return self.state.regions
-
-    @property
-    def civilizations(self) -> List[Civilization]:
-        return self.state.civilizations
-
-    @property
-    def tribes(self) -> List[Civilization]:
-        return self.state.civilizations
-
-    @property
-    def history(self) -> List[EpochRecord]:
-        return self.state.history
-
-    def genesis(self) -> Tuple[List[Region], List[Civilization]]:
-        regions = [
-            Region("reg_1", "中原沃野", TerrainType.PLAINS, 9, 4, neighbors=["reg_2", "reg_4"]),
-            Region("reg_2", "九江大泽", TerrainType.RIVERLAND, 8, 3, neighbors=["reg_1", "reg_4", "reg_5"]),
-            Region("reg_3", "昆仑荒原", TerrainType.HIGHLAND, 3, 10, neighbors=["reg_4", "reg_6"]),
-            Region("reg_4", "云梦林莽", TerrainType.FOREST, 6, 7, neighbors=["reg_1", "reg_2", "reg_3"]),
-            Region("reg_5", "东溟之滨", TerrainType.COASTAL, 5, 5, neighbors=["reg_2"]),
-            Region("reg_6", "西荒流沙", TerrainType.DESERT, 2, 8, neighbors=["reg_3"]),
-        ]
-        civs = [
-            Civilization(
-                id="civ_1", name="炎黎氏", leader_title="大祭司", leader_name="黎炎", totem="赤焰火鸟",
-                ethos="崇火勇猛，以战养战", population=112, food=330, ore=90, wealth=100,
-                home_region_id="reg_1", goals=["确保粮食安全", "控制富饶土地"],
-            ),
-            Civilization(
-                id="civ_2", name="渚泽氏", leader_title="族长", leader_name="云汐", totem="玄龟双鲤",
-                ethos="依水织网，善通商贾", population=104, food=320, ore=75, wealth=130,
-                home_region_id="reg_2", goals=["扩大商路", "维持和平环境"],
-            ),
-            Civilization(
-                id="civ_3", name="磐石氏", leader_title="首领", leader_name="重石", totem="苍角青兕",
-                ethos="耐苦耐劳，工于采石筑城", population=98, food=285, ore=160, wealth=90,
-                home_region_id="reg_3", goals=["积累技术", "保障资源自主"],
-            ),
-        ]
-        for civ in civs:
-            for other in civs:
-                if other.id != civ.id:
-                    civ.relationships[other.id] = DiplomaticStatus.NEUTRAL.value
-                    civ.tensions[other.id] = 0.0
-        for civ in civs:
-            next(r for r in regions if r.id == civ.home_region_id).controlled_by = civ.id
-        self.state = WorldState(epoch=0, regions=regions, civilizations=civs, history=[], seed=self.seed)
-        return self.regions, self.civilizations
-
-    def observe(self, civ: Civilization) -> CivilizationView:
-        region_map = self.state.region_map()
-        recent = [event.text for record in self.history[-3:] for event in record.events]
-        return CivilizationView(
-            epoch=self.epoch + 1,
-            self_state=civ,
-            home_region=region_map[civ.home_region_id],
-            known_regions=list(self.regions),
-            known_civilizations=list(self.civilizations),
-            recent_events=recent[-12:],
+    def submit_event(self, event: CompiledEvent) -> Resolution:
+        try:
+            self._validate_event(event)
+        except FeasibilityError as exc:
+            return Resolution(event.id, "world", "rejected", f"事件不成立：{exc}", "event")
+        self.events[event.id] = EventProcess(event, event.source.duration)
+        return Resolution(
+            event.id,
+            "world",
+            "submitted",
+            f"事件《{event.source.name}》开始，持续 {event.source.duration} 纪",
+            "event",
         )
 
-    def step(self, intents: Optional[List[AgentIntent]] = None) -> EpochRecord:
-        if not self.regions:
-            self.genesis()
-        self.state.epoch += 1
-        epoch = self.state.epoch
-        events: List[WorldEvent] = []
+    def submit(self, plan: CompiledPlan) -> Resolution:
+        actor = self.societies.get(plan.source.actor_id)
+        if not actor or not actor.is_alive:
+            return Resolution(plan.id, plan.source.actor_id, "rejected", "计划主体不存在或已灭绝")
+        if any(
+            project.plan.source.actor_id == actor.id
+            and project.status in {"queued", "active"}
+            for project in self.projects.values()
+        ):
+            return Resolution(plan.id, actor.id, "rejected", "已有计划占用主要协作能力")
+        project = Project(plan.id, plan)
+        self.projects[project.id] = project
+        return Resolution(plan.id, actor.id, "submitted", f"已接受开放计划《{plan.source.title}》")
 
-        disaster = self._apply_environment(epoch, events)
-        self._update_tensions(events)
-        if intents is None:
-            intents = [self.agent.decide(self.observe(c)) for c in self.civilizations if c.is_alive]
-
-        for intent in sorted(intents, key=lambda x: (-x.priority, x.civilization_id)):
-            self._resolve(intent, events)
-
-        self._settle_population(events)
-        self._write_memories(events)
-        resolutions = [e.text for e in events]
-        survivors = [c.name for c in self.civilizations if c.is_alive]
-        chronicle = self.historian.chronicle(epoch, resolutions, survivors)
-        record = EpochRecord(epoch, disaster, intents, resolutions, chronicle, events)
-        self.history.append(record)
-        return record
-
-    def _apply_environment(self, epoch: int, events: List[WorldEvent]) -> Optional[str]:
-        if self.rng.random() > 0.55:
-            return None
-        title, severity = self.rng.choice(self.DISASTERS)
-        for civ in self.civilizations:
-            if not civ.is_alive:
+    def advance(self, epoch: int) -> List[Resolution]:
+        resolutions: List[Resolution] = self._advance_events()
+        for project_id in sorted(self.projects):
+            project = self.projects[project_id]
+            if project.status in {"completed", "failed", "cancelled"}:
                 continue
-            region = self.state.region_map()[civ.home_region_id]
-            resistance = self.TECH_TREE.get("观星历法", {}).get("disaster_resistance", 1.0) if "观星历法" in civ.techs else 1.0
-            terrain_factor = 1.0
-            if title == "洪水" and region.terrain == TerrainType.RIVERLAND:
-                terrain_factor = 1.35
-            elif title == "大旱" and region.terrain == TerrainType.DESERT:
-                terrain_factor = 1.45
-            elif title == "丰年" and region.fertility >= 8:
-                terrain_factor = 1.25
-            delta = int(civ.food * severity * resistance * terrain_factor)
-            civ.food = max(0, civ.food - delta)
-        text = (
-            f"【天变】{title}波及诸邦，损失程度因地形与减灾技术而异。"
-            if severity >= 0
-            else f"【天时】{title}降临，高沃度地区受益尤多。"
-        )
-        events.append(WorldEvent(epoch, "environment", text, data={"event": title, "severity": severity}))
-        return title
+            actor = self.societies[project.plan.source.actor_id]
+            if not actor.is_alive:
+                project.status = "cancelled"
+                resolutions.append(
+                    Resolution(project.id, actor.id, "cancelled", "主体灭绝，计划中止")
+                )
+                continue
 
-    def _update_tensions(self, events: List[WorldEvent]) -> None:
-        """Evolve directed diplomatic tension from structural pressures.
-
-        Peace is not a permanent absorbing state: borders, scarcity, expansionist
-        goals and militarist ethos can gradually create hostility even before a raid.
-        Trade and alliances counteract that drift.
-        """
-        alive = [c for c in self.civilizations if c.is_alive]
-        for civ in alive:
-            civ.war_exhaustion = max(0.0, civ.war_exhaustion - 4.0)
-        for a in alive:
-            for b in alive:
-                if a.id == b.id:
+            primitive = project.plan.primitives[project.primitive_index]
+            primitive_name = self.PRIMITIVE_NAMES[primitive.kind]
+            if not project.started:
+                try:
+                    self._start(actor, primitive)
+                except FeasibilityError as exc:
+                    project.status = "failed"
+                    project.failure_reason = str(exc)
+                    resolutions.append(
+                        Resolution(
+                            project.id,
+                            actor.id,
+                            "failed",
+                            f"《{project.plan.source.title}》不可行：{exc}",
+                            primitive.kind.value,
+                        )
+                    )
                     continue
-                current = float(a.tensions.get(b.id, 0.0))
-                relation = a.relationships.get(b.id, DiplomaticStatus.NEUTRAL.value)
-                shared_border = self._share_border(a.id, b.id)
+                project.status = "active"
+                project.started = True
+                project.remaining_ticks = primitive.duration
+                resolutions.append(
+                    Resolution(
+                        project.id,
+                        actor.id,
+                        "started",
+                        f"开始{primitive_name}，预计需 {primitive.duration} 纪",
+                        primitive.kind.value,
+                    )
+                )
 
-                drift = 0.0
-                if shared_border:
-                    drift += 2.0
-                    if any(k in a.ethos for k in ("尚武", "勇猛", "以战", "征服")):
-                        drift += 1.5
-                    if any(k in " ".join(a.goals) for k in ("土地", "疆", "富饶")):
-                        drift += 1.5
-                if a.food < a.population * 2.4:
-                    drift += 1.5
-                if a.population > b.population * 1.25 and shared_border:
-                    drift += 1.0
-
-                if relation == DiplomaticStatus.ALLIED.value:
-                    drift -= 8.0
-                elif relation == DiplomaticStatus.FRIENDLY.value:
-                    drift -= 4.0
-                elif relation == DiplomaticStatus.HOSTILE.value:
-                    drift += 5.0
-                elif relation == DiplomaticStatus.WAR.value:
-                    drift += 10.0
-
-                a.tensions[b.id] = max(0.0, min(100.0, current + drift))
-
-        for i, a in enumerate(alive):
-            for b in alive[i + 1:]:
-                relation = a.relationships.get(b.id, DiplomaticStatus.NEUTRAL.value)
-                pair_tension = max(a.tensions.get(b.id, 0.0), b.tensions.get(a.id, 0.0))
-                if pair_tension >= 70 and relation not in {DiplomaticStatus.ALLIED.value, DiplomaticStatus.WAR.value, DiplomaticStatus.HOSTILE.value}:
-                    a.relationships[b.id] = DiplomaticStatus.HOSTILE.value
-                    b.relationships[a.id] = DiplomaticStatus.HOSTILE.value
-                    events.append(WorldEvent(
-                        self.epoch, "diplomatic_friction",
-                        f"【交恶】{a.name}与{b.name}因边境、资源与旧怨累积，关系转为【敌对】。",
-                        [a.id, b.id], {"salience": 2, "tension": round(pair_tension, 1)},
-                    ))
-                elif pair_tension < 25 and relation == DiplomaticStatus.HOSTILE.value:
-                    a.relationships[b.id] = DiplomaticStatus.NEUTRAL.value
-                    b.relationships[a.id] = DiplomaticStatus.NEUTRAL.value
-                    events.append(WorldEvent(
-                        self.epoch, "diplomatic_relaxation",
-                        f"【缓和】{a.name}与{b.name}紧张消退，关系恢复【中立】。",
-                        [a.id, b.id],
-                    ))
-
-    def _share_border(self, a_id: str, b_id: str) -> bool:
-        region_map = self.state.region_map()
-        a_regions = [r for r in self.regions if r.controlled_by == a_id]
-        for region in a_regions:
-            if any(region_map[n].controlled_by == b_id for n in region.neighbors):
-                return True
-        return False
-
-    def _resolve(self, intent: AgentIntent, events: List[WorldEvent]) -> None:
-        civs = self.state.civilization_map()
-        actor = civs.get(intent.civilization_id)
-        if actor is None or not actor.is_alive:
-            return
-        action = intent.action_type
-        if action == ActionType.CULTIVATE:
-            self._cultivate(actor, events)
-        elif action == ActionType.INVENT:
-            self._invent(actor, events)
-        elif action == ActionType.TRADE:
-            self._trade(actor, civs.get(intent.target_civilization_id or ""), events)
-        elif action == ActionType.TREATY:
-            self._treaty(actor, civs.get(intent.target_civilization_id or ""), events)
-        elif action == ActionType.RAID:
-            self._raid(actor, civs.get(intent.target_civilization_id or ""), events)
-        elif action == ActionType.EXPAND:
-            self._expand(actor, intent.target_region_id, events)
-        elif action == ActionType.WORSHIP:
-            self._worship(actor, events)
-
-    def _cultivate(self, civ: Civilization, events: List[WorldEvent]) -> None:
-        region = self.state.region_map()[civ.home_region_id]
-        tech_mult = 1.0
-        for tech in civ.techs:
-            tech_mult *= float(self.TECH_TREE.get(tech, {}).get("farm_mult", 1.0))
-        gain = int((civ.population * 1.8 + region.fertility * 18) * tech_mult)
-        civ.food += gain
-        events.append(WorldEvent(self.epoch, "agriculture", f"【农桑】{civ.name}依{region.name}地力耕作，增粮 {gain}。", [civ.id], {"food": gain}))
-
-    def _invent(self, civ: Civilization, events: List[WorldEvent]) -> None:
-        available = [t for t in self.TECH_TREE if t not in civ.techs]
-        if not available or civ.ore < 25:
-            civ.wealth += 15
-            events.append(WorldEvent(self.epoch, "craft", f"【百工】{civ.name}无力开辟新技，转而改良旧器，财富 +15。", [civ.id]))
-            return
-        region = self.state.region_map()[civ.home_region_id]
-        idx = (self.epoch + region.mineral_richness + len(civ.techs)) % len(available)
-        tech = available[idx]
-        civ.techs.append(tech)
-        civ.ore -= 25
-        events.append(WorldEvent(self.epoch, "technology", f"【技术】{civ.name}创制【{tech}】。", [civ.id], {"tech": tech}))
-
-    def _trade(self, actor: Civilization, target: Optional[Civilization], events: List[WorldEvent]) -> None:
-        if target is None or not target.is_alive or target.id == actor.id:
-            return
-        if actor.relationships.get(target.id) == DiplomaticStatus.WAR.value:
-            events.append(WorldEvent(self.epoch, "trade_failed", f"【互市未成】{actor.name}与{target.name}仍在交战，商路不通。", [actor.id, target.id]))
-            return
-        coastal_bonus = 1.0
-        if self.state.region_map()[actor.home_region_id].terrain == TerrainType.COASTAL or "造舟浮海" in actor.techs:
-            coastal_bonus *= 1.3
-        gain = int(35 * coastal_bonus)
-        actor.wealth += gain
-        target.wealth += 25
-        actor.food += 15
-        target.food += 15
-        self._improve_relation(actor, target)
-        self._reduce_tension(actor, target, 10)
-        events.append(WorldEvent(self.epoch, "trade", f"【互市】{actor.name}与{target.name}通商，{actor.name}财富 +{gain}。", [actor.id, target.id]))
-
-    def _treaty(self, actor: Civilization, target: Optional[Civilization], events: List[WorldEvent]) -> None:
-        if target is None or not target.is_alive or target.id == actor.id:
-            return
-        current = actor.relationships.get(target.id, DiplomaticStatus.NEUTRAL.value)
-        new_status = DiplomaticStatus.FRIENDLY.value if current in {DiplomaticStatus.HOSTILE.value, DiplomaticStatus.WAR.value} else DiplomaticStatus.ALLIED.value
-        actor.relationships[target.id] = new_status
-        target.relationships[actor.id] = new_status
-        self._reduce_tension(actor, target, 70)
-        actor.war_exhaustion = max(0.0, actor.war_exhaustion - 20)
-        target.war_exhaustion = max(0.0, target.war_exhaustion - 20)
-        events.append(WorldEvent(self.epoch, "diplomacy", f"【盟约】{actor.name}与{target.name}关系转为【{new_status}】。", [actor.id, target.id]))
-
-    def _raid(self, actor: Civilization, target: Optional[Civilization], events: List[WorldEvent]) -> None:
-        if target is None or not target.is_alive or target.id == actor.id:
-            return
-        if actor.relationships.get(target.id) == DiplomaticStatus.ALLIED.value:
-            actor.relationships[target.id] = DiplomaticStatus.HOSTILE.value
-            target.relationships[actor.id] = DiplomaticStatus.HOSTILE.value
-            events.append(WorldEvent(self.epoch, "betrayal", f"【背盟】{actor.name}毁盟攻{target.name}，两邦转为敌对。", [actor.id, target.id]))
-        else:
-            actor.relationships[target.id] = DiplomaticStatus.WAR.value
-            target.relationships[actor.id] = DiplomaticStatus.WAR.value
-        actor.tensions[target.id] = 100.0
-        target.tensions[actor.id] = 100.0
-        actor.war_exhaustion = min(100.0, actor.war_exhaustion + 35)
-        target.war_exhaustion = min(100.0, target.war_exhaustion + 25)
-
-        attack = actor.population + sum(int(self.TECH_TREE.get(t, {}).get("attack", 0)) for t in actor.techs)
-        defense = target.population + sum(int(self.TECH_TREE.get(t, {}).get("defense", 0)) for t in target.techs)
-        attack += self.rng.randint(0, 25)
-        defense += self.rng.randint(0, 25)
-        if attack > defense:
-            loot = min(target.food, 90)
-            target.food -= loot
-            actor.food += loot
-            loss_a = self.rng.randint(4, 10)
-            loss_t = self.rng.randint(12, 24)
-            actor.population = max(10, actor.population - loss_a)
-            target.population = max(0, target.population - loss_t)
-            events.append(WorldEvent(self.epoch, "war", f"【战争】{actor.name}击败{target.name}，夺粮 {loot}；双方人口损失 {loss_a}/{loss_t}。", [actor.id, target.id]))
-        else:
-            loss_a = self.rng.randint(10, 20)
-            actor.population = max(10, actor.population - loss_a)
-            events.append(WorldEvent(self.epoch, "war", f"【战争】{actor.name}攻{target.name}不克，人口损失 {loss_a}。", [actor.id, target.id]))
-        if target.population <= 12:
-            target.is_alive = False
-            for region in self.regions:
-                if region.controlled_by == target.id:
-                    region.controlled_by = actor.id
-            events.append(WorldEvent(self.epoch, "collapse", f"【覆亡】{target.name}失去组织能力，其控制地转入{actor.name}势力范围。", [target.id, actor.id], {"salience": 3}))
-
-    def _expand(self, actor: Civilization, requested_region_id: Optional[str], events: List[WorldEvent]) -> None:
-        region_map = self.state.region_map()
-        controlled = [r for r in self.regions if r.controlled_by == actor.id]
-        candidate_ids = {
-            rid
-            for region in controlled
-            for rid in region.neighbors
-            if region_map[rid].controlled_by is None
-        }
-        candidates = [region_map[rid] for rid in sorted(candidate_ids)]
-        if requested_region_id:
-            requested = region_map.get(requested_region_id)
-            if requested in candidates:
-                candidates = [requested]
-        if not candidates:
-            actor.population += 5
-            events.append(WorldEvent(self.epoch, "settlement", f"【拓土】{actor.name}边疆已无无主地，只在旧疆增筑聚落。", [actor.id]))
-            return
-        if actor.food < actor.population * 3:
-            region = max(candidates, key=lambda r: (r.fertility, r.mineral_richness, r.id))
-        else:
-            region = max(candidates, key=lambda r: (r.mineral_richness, r.fertility, r.id))
-        region.controlled_by = actor.id
-        actor.ore += region.mineral_richness * 4
-        actor.food += region.fertility * 8
-        events.append(WorldEvent(self.epoch, "expansion", f"【拓境】{actor.name}控制{region.name}，开始利用当地地力与矿藏。", [actor.id], {"region": region.id}))
-
-        for neighbor_id in region.neighbors:
-            neighbor_owner = region_map[neighbor_id].controlled_by
-            if neighbor_owner and neighbor_owner != actor.id:
-                other = self.state.civilization_map().get(neighbor_owner)
-                if other and other.is_alive:
-                    actor.tensions[other.id] = min(100.0, actor.tensions.get(other.id, 0.0) + 6)
-                    other.tensions[actor.id] = min(100.0, other.tensions.get(actor.id, 0.0) + 14)
-
-    def _worship(self, actor: Civilization, events: List[WorldEvent]) -> None:
-        cost = min(actor.food, 20)
-        actor.food -= cost
-        actor.wealth += 8
-        events.append(WorldEvent(self.epoch, "culture", f"【祭仪】{actor.name}祭奉{actor.totem}，消耗粮 {cost}，共同体凝聚增强。", [actor.id]))
-
-    def _settle_population(self, events: List[WorldEvent]) -> None:
-        for civ in self.civilizations:
-            if not civ.is_alive:
+            project.remaining_ticks -= 1
+            if project.remaining_ticks > 0:
+                resolutions.append(
+                    Resolution(
+                        project.id,
+                        actor.id,
+                        "progress",
+                        f"{primitive_name}尚余 {project.remaining_ticks} 纪",
+                        primitive.kind.value,
+                    )
+                )
                 continue
-            consumption = civ.population * 2
-            if civ.food >= consumption:
-                civ.food -= consumption
-                growth_mult = 1.2 if "草药医理" in civ.techs else 1.0
-                growth = max(1, int(civ.population * 0.035 * growth_mult))
-                civ.population += growth
+
+            success, summary = self._complete(actor, primitive, epoch)
+            side_effects = self._resolve_risks(actor, primitive)
+            if not success:
+                project.status = "failed"
+                project.failure_reason = summary
+                resolutions.append(
+                    Resolution(
+                        project.id,
+                        actor.id,
+                        "failed",
+                        summary,
+                        primitive.kind.value,
+                        side_effects,
+                    )
+                )
+                continue
+
+            project.primitive_index += 1
+            project.started = False
+            if project.primitive_index >= len(project.plan.primitives):
+                project.status = "completed"
+                status = "completed"
+                summary = f"《{project.plan.source.title}》完成。{summary}"
             else:
-                deficit = consumption - civ.food
-                deaths = min(max(0, civ.population - 10), max(1, deficit // 3))
-                civ.food = 0
-                civ.population -= deaths
-                events.append(WorldEvent(self.epoch, "famine", f"【饥馑】{civ.name}粮食不足，人口减少 {deaths}。", [civ.id], {"salience": 2}))
+                status = "step_completed"
+                summary = f"阶段完成。{summary}"
+            resolutions.append(
+                Resolution(
+                    project.id,
+                    actor.id,
+                    status,
+                    summary,
+                    primitive.kind.value,
+                    side_effects,
+                )
+            )
 
-    def _write_memories(self, events: List[WorldEvent]) -> None:
-        civ_map = self.state.civilization_map()
-        for event in events:
-            salience = int(event.data.get("salience", 1))
-            if event.kind in {"war", "collapse", "betrayal", "diplomacy", "diplomatic_friction"}:
-                salience = max(salience, 2)
-            for civ_id in event.actors:
-                civ = civ_map.get(civ_id)
-                if civ:
-                    civ.remember(self.epoch, event.text, salience=salience)
+        resolutions.extend(self._environment_and_population())
+        return resolutions
 
-    def _improve_relation(self, a: Civilization, b: Civilization) -> None:
-        current = a.relationships.get(b.id, DiplomaticStatus.NEUTRAL.value)
-        if current == DiplomaticStatus.HOSTILE.value:
-            status = DiplomaticStatus.NEUTRAL.value
-        elif current == DiplomaticStatus.NEUTRAL.value:
-            status = DiplomaticStatus.FRIENDLY.value
+    def _validate_event(self, compiled: CompiledEvent) -> None:
+        event = compiled.source
+        location_ids = set(event.location_resource_deltas) | set(
+            event.location_property_deltas
+        )
+        unknown_locations = location_ids - set(self.locations)
+        if unknown_locations:
+            raise FeasibilityError(f"事件指向未知地点 {sorted(unknown_locations)}")
+
+        resources: Set[str] = set(event.external_inputs) | set(event.external_outputs)
+        for deltas in event.location_resource_deltas.values():
+            resources.update(deltas)
+        unknown_resources = resources - set(self.resource_specs)
+        if unknown_resources:
+            raise FeasibilityError(f"事件涉及未知资源 {sorted(unknown_resources)}")
+
+        internal_mass = sum(
+            delta * self.resource_specs[resource_id].mass_per_unit
+            for deltas in event.location_resource_deltas.values()
+            for resource_id, delta in deltas.items()
+        )
+        input_mass = sum(
+            amount * self.resource_specs[resource_id].mass_per_unit
+            for resource_id, amount in event.external_inputs.items()
+        )
+        output_mass = sum(
+            amount * self.resource_specs[resource_id].mass_per_unit
+            for resource_id, amount in event.external_outputs.items()
+        )
+        if abs(internal_mass - (input_mass - output_mass)) > 1e-6:
+            raise FeasibilityError("事件资源变化与外部输入输出不守恒")
+
+        for location_id, deltas in event.location_resource_deltas.items():
+            location = self.locations[location_id]
+            for resource_id, delta in deltas.items():
+                final = location.stocks.get(resource_id, 0.0) + delta
+                capacity = location.capacities.get(resource_id, max(final, 0.0))
+                if final < -1e-9:
+                    raise FeasibilityError(f"{location_id} 的 {resource_id} 不足以支撑事件")
+                if final > capacity + 1e-9:
+                    raise FeasibilityError(f"{location_id} 的 {resource_id} 变化超过局部容量")
+
+        for location_id, deltas in event.location_property_deltas.items():
+            location = self.locations[location_id]
+            for property_name, delta in deltas.items():
+                current = location.properties.get(property_name, 0.0)
+                if abs(delta) > max(1.0, abs(current)) * 0.5:
+                    raise FeasibilityError(f"{property_name} 的单次变化超过物理上限")
+                if property_name == "habitability" and not 0 <= current + delta <= 1:
+                    raise FeasibilityError("栖息适宜度必须保持在 0 到 1 之间")
+
+    def _advance_events(self) -> List[Resolution]:
+        resolutions: List[Resolution] = []
+        for event_id in sorted(self.events):
+            process = self.events[event_id]
+            if process.remaining_ticks <= 0:
+                continue
+            event = process.event.source
+            divisor = event.duration
+            resource_updates = []
+            for location_id, deltas in event.location_resource_deltas.items():
+                location = self.locations[location_id]
+                for resource_id, total_delta in deltas.items():
+                    updated = location.stocks.get(resource_id, 0.0) + total_delta / divisor
+                    capacity = location.capacities.get(resource_id, updated)
+                    if updated < -1e-9 or updated > capacity + 1e-9:
+                        process.remaining_ticks = 0
+                        resolutions.append(
+                            Resolution(
+                                event_id,
+                                "world",
+                                "failed",
+                                f"事件《{event.name}》因后续状态超出局部资源边界而中止",
+                                "event",
+                            )
+                        )
+                        break
+                    resource_updates.append((location, resource_id, updated))
+                if process.remaining_ticks <= 0:
+                    break
+            if process.remaining_ticks <= 0:
+                continue
+            property_updates = []
+            for location_id, deltas in event.location_property_deltas.items():
+                location = self.locations[location_id]
+                for property_name, total_delta in deltas.items():
+                    updated = location.properties.get(property_name, 0.0) + total_delta / divisor
+                    if property_name == "habitability" and not 0 <= updated <= 1:
+                        process.remaining_ticks = 0
+                        resolutions.append(
+                            Resolution(
+                                event_id,
+                                "world",
+                                "failed",
+                                f"事件《{event.name}》因后续适宜度越界而中止",
+                                "event",
+                            )
+                        )
+                        break
+                    property_updates.append((location, property_name, updated))
+                if process.remaining_ticks <= 0:
+                    break
+            if process.remaining_ticks <= 0:
+                continue
+            for location, resource_id, updated in resource_updates:
+                location.stocks[resource_id] = round(updated, 6)
+            for location, property_name, updated in property_updates:
+                location.properties[property_name] = round(updated, 6)
+            process.remaining_ticks -= 1
+            if process.remaining_ticks:
+                summary = (
+                    f"事件《{event.name}》继续作用，尚余 {process.remaining_ticks} 纪"
+                )
+                status = "progress"
+            else:
+                summary = f"事件《{event.name}》结束"
+                status = "completed"
+            resolutions.append(
+                Resolution(event_id, "world", status, summary, "event")
+            )
+        return resolutions
+
+    def _start(self, actor: Society, primitive: Primitive) -> None:
+        required_labor = self._effective_labor(actor, primitive)
+        if required_labor > self._labor_capacity(actor):
+            raise FeasibilityError(
+                f"需 {required_labor} 劳动单位，但当前最多可协调 {self._labor_capacity(actor)}"
+            )
+        params = primitive.parameters
+        self._require_capabilities(actor, params.get("required_capabilities", []))
+
+        if primitive.kind == PrimitiveKind.ACQUIRE:
+            location = self.locations[actor.location_id]
+            self._require_known_resources(params["resources"])
+            self._take(location.stocks, params["resources"], "环境存量")
+        elif primitive.kind == PrimitiveKind.TRANSFORM:
+            self._require_known_resources(params["inputs"])
+            output_specs = self._proposed_output_specs(params)
+            self._check_mass_balance(params["inputs"], params["outputs"], output_specs)
+            self._take(actor.inventory, params["inputs"], "库存")
+        elif primitive.kind == PrimitiveKind.CONSTRUCT:
+            if params["structure_id"] in self.structures:
+                raise FeasibilityError("结构标识已经存在")
+            self._require_known_resources(params["materials"])
+            self._take(actor.inventory, params["materials"], "库存")
+        elif primitive.kind == PrimitiveKind.RESEARCH:
+            proposal: KnowledgeProposal = params["knowledge"]
+            missing = [item for item in proposal.prerequisites if item not in actor.knowledge]
+            if missing:
+                raise FeasibilityError(f"尚未掌握知识依赖 {missing}")
+            self._require_known_resources(params["materials"])
+            self._take(actor.inventory, params["materials"], "库存")
+        elif primitive.kind == PrimitiveKind.COMMUNICATE:
+            target = self.societies.get(params["target_society_id"])
+            if not target or not target.is_alive:
+                raise FeasibilityError("信息接收方不存在或已灭绝")
+            missing = set(params["knowledge_ids"]) - actor.knowledge
+            if missing:
+                raise FeasibilityError(f"无法传播尚未掌握的知识 {sorted(missing)}")
+            if not self._route(actor.location_id, target.location_id):
+                raise FeasibilityError("双方之间没有可达的信息路径")
+        elif primitive.kind == PrimitiveKind.ORGANIZE:
+            if params["organization_id"] in actor.organizations:
+                raise FeasibilityError("组织标识已经存在")
+            if params["members"] > actor.population:
+                raise FeasibilityError("组织成员超过存活人口")
+            self._require_known_resources(params["materials"])
+            self._take(actor.inventory, params["materials"], "库存")
+        elif primitive.kind == PrimitiveKind.RELOCATE:
+            if int(params["population"]) != actor.population:
+                raise FeasibilityError("最小版本只支持整个社会共同迁移")
+            route = self._route(actor.location_id, params["destination_id"])
+            if not route:
+                raise FeasibilityError("目的地不相邻或不可达")
+            destination = self.locations.get(params["destination_id"])
+            if not destination or destination.properties.get("habitability", 0) <= 0:
+                raise FeasibilityError("目的地无法维持当前生命形态")
+            self._take(actor.inventory, params["cargo"], "库存")
+            transport = self._structure_effect(actor, "transport_capacity")
+            travel_need = (
+                route.distance
+                * actor.population
+                * 0.01
+                * route.carrying_cost
+                / (1.0 + transport)
+            )
+            self._consume_by_tag(actor, "nutrition", travel_need, "迁移补给不足")
+
+    def _complete(
+        self, actor: Society, primitive: Primitive, epoch: int
+    ) -> Tuple[bool, str]:
+        params = primitive.parameters
+        if primitive.kind == PrimitiveKind.ACQUIRE:
+            gained = dict(params["resources"])
+            self._give(actor.inventory, gained)
+            return True, f"取得资源 {self._format_quantities(gained)}"
+        if primitive.kind == PrimitiveKind.TRANSFORM:
+            for resource_id, spec in self._proposed_output_specs(params).items():
+                self.resource_specs.setdefault(resource_id, spec)
+            self._give(actor.inventory, params["outputs"])
+            return True, f"完成资源转换并产出 {self._format_quantities(params['outputs'])}"
+        if primitive.kind == PrimitiveKind.CONSTRUCT:
+            structure = Structure(
+                id=params["structure_id"],
+                name=params["name"],
+                owner_id=actor.id,
+                location_id=actor.location_id,
+                effects=dict(params["effects"]),
+            )
+            self.structures[structure.id] = structure
+            return True, f"建成《{structure.name}》"
+        if primitive.kind == PrimitiveKind.RELOCATE:
+            actor.location_id = params["destination_id"]
+            self._give(actor.inventory, params["cargo"])
+            return True, f"社会整体迁至 {self.locations[actor.location_id].name}"
+        if primitive.kind == PrimitiveKind.RESEARCH:
+            return self._complete_research(actor, params["knowledge"], epoch)
+        if primitive.kind == PrimitiveKind.COMMUNICATE:
+            target = self.societies[params["target_society_id"]]
+            before = len(target.knowledge)
+            target.knowledge.update(params["knowledge_ids"])
+            return True, f"向 {target.name} 传播 {len(target.knowledge) - before} 个知识节点"
+        if primitive.kind == PrimitiveKind.ORGANIZE:
+            organization = Organization(
+                id=params["organization_id"],
+                name=params["name"],
+                purpose=params["purpose"],
+                members=int(params["members"]),
+                rules=list(params["rules"]),
+                effects=dict(params["effects"]),
+            )
+            actor.organizations[organization.id] = organization
+            return True, f"形成组织《{organization.name}》"
+        raise AssertionError(f"unhandled primitive: {primitive.kind}")
+
+    def _complete_research(
+        self, actor: Society, proposal: KnowledgeProposal, epoch: int
+    ) -> Tuple[bool, str]:
+        observation_score = min(0.28, len(set(proposal.observations)) * 0.07)
+        support = min(0.2, self._structure_effect(actor, "research_efficiency") * 0.1)
+        coordination = min(0.12, self._organization_effect(actor, "coordination") * 0.06)
+        probability = min(0.9, 0.38 + observation_score + support + coordination)
+        if self.rng.random() > probability:
+            return False, f"研究未通过可重复检验，成功阈值为 {probability:.2f}"
+
+        key = "|".join(
+            [proposal.name, proposal.description] + sorted(proposal.prerequisites)
+        )
+        knowledge_id = "knowledge-" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+        if knowledge_id not in self.knowledge_graph.nodes:
+            self.knowledge_graph.add(
+                KnowledgeNode(
+                    id=knowledge_id,
+                    name=proposal.name,
+                    description=proposal.description,
+                    discovered_by=actor.id,
+                    discovered_epoch=epoch,
+                    prerequisites=list(proposal.prerequisites),
+                    observations=list(proposal.observations),
+                    capabilities=list(proposal.capabilities),
+                    risks=list(proposal.risks),
+                )
+            )
+        actor.knowledge.add(knowledge_id)
+        return True, f"知识图谱新增《{proposal.name}》[{knowledge_id}]"
+
+    def _resolve_risks(self, actor: Society, primitive: Primitive) -> List[str]:
+        risks = list(primitive.risks)
+        required = set(primitive.parameters.get("required_capabilities", []))
+        for knowledge_id in sorted(actor.knowledge):
+            node = self.knowledge_graph.nodes.get(knowledge_id)
+            if node and required.intersection(node.capabilities):
+                risks.extend(node.risks)
+
+        side_effects: List[str] = []
+        protection = min(0.7, self._structure_effect(actor, "hazard_resistance") * 0.5)
+        for risk in risks:
+            if self.rng.random() >= risk.probability * (1.0 - protection):
+                continue
+            if risk.effect == "population_loss":
+                loss = min(actor.population, max(1, int(risk.magnitude)))
+                actor.population -= loss
+                side_effects.append(f"{risk.name} 导致 {loss} 个个体死亡")
+            elif risk.effect == "resource_loss":
+                resource_id = risk.resource_id or self._largest_inventory(actor)
+                loss = min(actor.inventory.get(resource_id, 0.0), risk.magnitude)
+                actor.inventory[resource_id] = actor.inventory.get(resource_id, 0.0) - loss
+                side_effects.append(f"{risk.name} 损失 {loss:.1f} {resource_id}")
+            elif risk.effect == "environment_damage":
+                location = self.locations[actor.location_id]
+                loss = min(location.properties.get("habitability", 0.0), risk.magnitude)
+                location.properties["habitability"] -= loss
+                side_effects.append(f"{risk.name} 使栖息适宜度下降 {loss:.2f}")
+            elif risk.effect == "organization_strain":
+                loss = min(actor.traits.get("cohesion", 0.0), risk.magnitude)
+                actor.traits["cohesion"] = actor.traits.get("cohesion", 0.0) - loss
+                side_effects.append(f"{risk.name} 使凝聚度下降 {loss:.2f}")
+        if actor.population <= 1:
+            actor.is_alive = False
+            side_effects.append(f"{actor.name} 已无可持续繁衍的种群")
+        return side_effects
+
+    def _environment_and_population(self) -> List[Resolution]:
+        resolutions: List[Resolution] = []
+        fission_candidates: List[Society] = []
+        for actor in sorted(self.societies.values(), key=lambda item: item.id):
+            if not actor.is_alive:
+                continue
+            location = self.locations[actor.location_id]
+            distribution = self._organization_effect(actor, "distribution")
+            habitability = location.properties.get("habitability", 0.5)
+            thermal_variance = location.properties.get("thermal_variance", 0.0)
+            crowding = location.properties.get("crowding_pressure", 0.0)
+            carrying_capacity = max(1.0, location.properties.get("carrying_capacity", 100.0))
+            stress = (
+                max(0.0, 0.65 - habitability) * 0.7
+                + max(0.0, thermal_variance) * 0.14
+                + max(0.0, crowding) * actor.population / carrying_capacity * 0.08
+            )
+            efficiency = 1.0 + distribution * 0.08
+            satisfactions = []
+            for need_tag, rate in sorted(actor.metabolic_needs.items()):
+                need = actor.population * rate * (1.0 + stress) / efficiency
+                consumed = self._consume_available_by_tag(actor, need_tag, need)
+                satisfactions.append(consumed / need if need else 1.0)
+            satisfaction = min(satisfactions) if satisfactions else 1.0
+            viability = min(1.0, habitability / 0.25)
+            if satisfaction + 1e-9 < 1.0 or viability + 1e-9 < 1.0:
+                shortage = 1.0 - min(satisfaction, viability)
+                deaths = max(1, int(actor.population * shortage * 0.18))
+                actor.population = max(0, actor.population - deaths)
+                resolutions.append(
+                    Resolution(
+                        "upkeep",
+                        actor.id,
+                        "side_effect",
+                        f"环境或代谢约束不足，种群减少 {deaths}",
+                    )
+                )
+            else:
+                capacity = location.properties.get("carrying_capacity", 100.0)
+                capacity += self._structure_effect(actor, "carrying_capacity") * 20
+                growth_chance = 0.55 * max(0.0, min(1.0, habitability))
+                if actor.population < capacity and self.rng.random() < growth_chance:
+                    actor.population += max(1, int(actor.population * 0.025))
+            if actor.population <= 1:
+                actor.is_alive = False
+                resolutions.append(
+                    Resolution("upkeep", actor.id, "extinct", f"{actor.name} 的种群灭绝")
+                )
+            elif actor.population >= 30 and actor.traits.get("cohesion", 0.5) < 0.18:
+                fission_candidates.append(actor)
+        for actor in fission_candidates:
+            resolution = self._maybe_fission(actor)
+            if resolution:
+                resolutions.append(resolution)
+        return resolutions
+
+    def _maybe_fission(self, actor: Society) -> Optional[Resolution]:
+        conflict = self._organization_effect(actor, "conflict_pressure")
+        cohesion = actor.traits.get("cohesion", 0.5)
+        probability = min(0.45, 0.08 + max(0.0, 0.18 - cohesion) + conflict * 0.08)
+        if self.rng.random() >= probability:
+            return None
+        branch_index = 1
+        while f"{actor.id}-branch-{branch_index}" in self.societies:
+            branch_index += 1
+        child_id = f"{actor.id}-branch-{branch_index}"
+        child_population = max(8, int(actor.population * 0.32))
+        original_population = actor.population
+        actor.population -= child_population
+        share = child_population / original_population
+        child_inventory: Dict[str, float] = {}
+        for resource_id, amount in list(actor.inventory.items()):
+            transferred = round(amount * share, 6)
+            actor.inventory[resource_id] = round(amount - transferred, 6)
+            child_inventory[resource_id] = transferred
+        actor.traits["cohesion"] = min(1.0, cohesion + 0.14)
+        child_traits = dict(actor.traits)
+        child_traits["cohesion"] = max(0.28, cohesion + 0.1)
+        child = Society(
+            id=child_id,
+            name=f"{actor.name}第{branch_index}分支",
+            species_profile=actor.species_profile,
+            population=child_population,
+            location_id=actor.location_id,
+            inventory=child_inventory,
+            traits=child_traits,
+            metabolic_needs=dict(actor.metabolic_needs),
+            knowledge=set(actor.knowledge),
+        )
+        self.societies[child.id] = child
+        return Resolution(
+            "social-fission",
+            actor.id,
+            "fission",
+            f"凝聚度长期过低，{child_population} 个个体形成独立社会《{child.name}》",
+        )
+
+    def _labor_capacity(self, actor: Society) -> int:
+        coordination = self._organization_effect(actor, "coordination")
+        cohesion = actor.traits.get("cohesion", 0.5)
+        return max(1, int(actor.population * (0.18 + cohesion * 0.08 + coordination * 0.04)))
+
+    def _effective_labor(self, actor: Society, primitive: Primitive) -> int:
+        if primitive.kind == PrimitiveKind.ACQUIRE:
+            effect = self._structure_effect(actor, "acquire_efficiency")
+        elif primitive.kind == PrimitiveKind.RELOCATE:
+            effect = self._structure_effect(actor, "transport_capacity")
         else:
-            status = current
-        a.relationships[b.id] = status
-        b.relationships[a.id] = status
+            effect = 0.0
+        return max(1, int(round(primitive.labor / (1.0 + effect))))
 
-    def _reduce_tension(self, a: Civilization, b: Civilization, amount: float) -> None:
-        a.tensions[b.id] = max(0.0, a.tensions.get(b.id, 0.0) - amount)
-        b.tensions[a.id] = max(0.0, b.tensions.get(a.id, 0.0) - amount)
+    def _require_capabilities(self, actor: Society, required: Iterable[str]) -> None:
+        available = self.knowledge_graph.available_capabilities(actor.knowledge)
+        missing = set(required) - available
+        if missing:
+            raise FeasibilityError(f"缺少可验证能力 {sorted(missing)}")
 
+    def _require_known_resources(self, quantities: Dict[str, float]) -> None:
+        unknown = set(quantities) - set(self.resource_specs)
+        if unknown:
+            raise FeasibilityError(f"未知资源 {sorted(unknown)}")
 
-SimulationEngine = WorldEngine
+    def _proposed_output_specs(self, params: Dict) -> Dict[str, ResourceSpec]:
+        specs = params.get("output_specs", {})
+        proposed: Dict[str, ResourceSpec] = {}
+        for resource_id in params["outputs"]:
+            if resource_id in self.resource_specs:
+                continue
+            raw = specs.get(resource_id)
+            if not isinstance(raw, dict) or not raw.get("name") or not raw.get("tags"):
+                raise FeasibilityError(f"新材料 {resource_id} 缺少可检验的资源描述")
+            tags = raw["tags"]
+            if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
+                raise FeasibilityError(f"新材料 {resource_id} 的 tags 无效")
+            try:
+                mass_per_unit = float(raw.get("mass_per_unit", 1.0))
+            except (TypeError, ValueError) as exc:
+                raise FeasibilityError(
+                    f"新材料 {resource_id} 的单位质量无效"
+                ) from exc
+            if not math.isfinite(mass_per_unit) or mass_per_unit <= 0:
+                raise FeasibilityError(f"新材料 {resource_id} 的单位质量无效")
+            proposed[resource_id] = ResourceSpec(
+                resource_id, raw["name"], set(tags), mass_per_unit
+            )
+        return proposed
+
+    def _check_mass_balance(
+        self,
+        inputs: Dict[str, float],
+        outputs: Dict[str, float],
+        proposed_specs: Dict[str, ResourceSpec],
+    ) -> None:
+        input_mass = sum(
+            amount * self.resource_specs[resource_id].mass_per_unit
+            for resource_id, amount in inputs.items()
+        )
+        output_mass = sum(
+            amount
+            * (self.resource_specs.get(resource_id) or proposed_specs[resource_id]).mass_per_unit
+            for resource_id, amount in outputs.items()
+        )
+        if output_mass > input_mass * 0.95 + 1e-9:
+            raise FeasibilityError("转换结果违反质量与损耗约束")
+
+    @staticmethod
+    def _take(stock: Dict[str, float], quantities: Dict[str, float], label: str) -> None:
+        missing = {
+            resource_id: amount - stock.get(resource_id, 0.0)
+            for resource_id, amount in quantities.items()
+            if stock.get(resource_id, 0.0) + 1e-9 < amount
+        }
+        if missing:
+            raise FeasibilityError(f"{label}不足 {missing}")
+        for resource_id, amount in quantities.items():
+            stock[resource_id] = round(stock.get(resource_id, 0.0) - amount, 6)
+
+    @staticmethod
+    def _give(stock: Dict[str, float], quantities: Dict[str, float]) -> None:
+        for resource_id, amount in quantities.items():
+            stock[resource_id] = round(stock.get(resource_id, 0.0) + amount, 6)
+
+    def _consume_by_tag(
+        self, actor: Society, tag: str, amount: float, error: str
+    ) -> None:
+        consumed = self._consume_available_by_tag(actor, tag, amount)
+        if consumed + 1e-9 < amount:
+            raise FeasibilityError(error)
+
+    def _consume_available_by_tag(self, actor: Society, tag: str, amount: float) -> float:
+        remaining = amount
+        for resource_id in sorted(actor.inventory):
+            spec = self.resource_specs.get(resource_id)
+            if not spec or tag not in spec.tags:
+                continue
+            taken = min(actor.inventory[resource_id], remaining)
+            actor.inventory[resource_id] = round(actor.inventory[resource_id] - taken, 6)
+            remaining -= taken
+            if remaining <= 1e-9:
+                break
+        return amount - remaining
+
+    def _route(self, source_id: str, destination_id: str):
+        if source_id == destination_id:
+            return None
+        source = self.locations.get(source_id)
+        if not source:
+            return None
+        return next(
+            (route for route in source.routes if route.destination_id == destination_id),
+            None,
+        )
+
+    def _structure_effect(self, actor: Society, effect: str) -> float:
+        return sum(
+            structure.effects.get(effect, 0.0) * structure.durability
+            for structure in self.structures.values()
+            if structure.owner_id == actor.id and structure.location_id == actor.location_id
+        )
+
+    @staticmethod
+    def _organization_effect(actor: Society, effect: str) -> float:
+        return sum(item.effects.get(effect, 0.0) for item in actor.organizations.values())
+
+    @staticmethod
+    def _largest_inventory(actor: Society) -> str:
+        if not actor.inventory:
+            return "unknown"
+        return max(sorted(actor.inventory), key=lambda key: actor.inventory[key])
+
+    def _format_quantities(self, quantities: Dict[str, float]) -> str:
+        return "、".join(
+            f"{self.resource_specs[resource_id].name}={amount:.1f}"
+            for resource_id, amount in quantities.items()
+        )
