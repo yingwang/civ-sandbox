@@ -16,10 +16,10 @@ from models import (
     OpenPlan,
     Resolution,
     ResourceSpec,
-    Route,
     Society,
 )
 from plan_compiler import PlanCompileError, PlanCompiler
+from scenarios import ScenarioState, build_scenario
 from world_engine import WorldEngine
 
 class SimulationEngine:
@@ -30,10 +30,13 @@ class SimulationEngine:
         seed: Optional[int] = None,
         planner_mode: str = "cli",
         backend: Optional[LLMBackend] = None,
+        scenario: str = "warring-states",
     ):
         self.seed = 0 if seed is None else seed
         self.rng = random.Random(self.seed)
         self.backend = backend or LLMBackend(planner_mode)
+        self.scenario_name = scenario
+        self.scenario: Optional[ScenarioState] = None
         self.plan_compiler = PlanCompiler()
         self.event_compiler = EventCompiler()
         self.epoch = 0
@@ -47,90 +50,12 @@ class SimulationEngine:
     def genesis(
         self,
     ) -> Tuple[Dict[str, Location], Dict[str, Society]]:
-        """Create one generic carbon-based starting scenario, not a universal era."""
-        self.resource_specs = {
-            "nutrient_matrix": ResourceSpec(
-                "nutrient_matrix", "可代谢营养基质", {"nutrition", "organic"}
-            ),
-            "fibrous_matter": ResourceSpec(
-                "fibrous_matter", "韧性纤维质", {"organic", "structural"}
-            ),
-            "granular_mineral": ResourceSpec(
-                "granular_mineral", "颗粒矿质", {"mineral", "structural"}
-            ),
-            "plastic_sediment": ResourceSpec(
-                "plastic_sediment", "可塑沉积质", {"mineral", "moldable"}
-            ),
-            "circulating_solvent": ResourceSpec(
-                "circulating_solvent", "循环溶剂", {"fluid", "hydration"}
-            ),
-            "chemical_store": ResourceSpec(
-                "chemical_store", "化学储能质", {"energy", "organic"}
-            ),
-        }
-        location_names = ["低势汇流带", "多孔高台", "周期湿润谷", "风化边缘地"]
-        self.locations = {}
-        for index, name in enumerate(location_names):
-            location_id = f"location-{index + 1}"
-            capacities = {
-                resource_id: round(self.rng.uniform(70, 180), 3)
-                for resource_id in self.resource_specs
-            }
-            stocks = {
-                resource_id: round(capacity * self.rng.uniform(0.42, 0.9), 3)
-                for resource_id, capacity in capacities.items()
-            }
-            self.locations[location_id] = Location(
-                location_id,
-                name,
-                {
-                    "habitability": round(self.rng.uniform(0.55, 0.92), 3),
-                    "carrying_capacity": round(self.rng.uniform(95, 155), 2),
-                    "crowding_pressure": round(self.rng.uniform(0.1, 0.5), 3),
-                    "fluid_activity": round(self.rng.uniform(0.2, 0.9), 3),
-                    "thermal_variance": round(self.rng.uniform(0.08, 0.55), 3),
-                    "elevation": round(self.rng.uniform(0.0, 1.0), 3),
-                },
-                stocks,
-                capacities,
-            )
-        location_ids = sorted(self.locations)
-        for index, location_id in enumerate(location_ids):
-            destinations = {
-                location_ids[(index - 1) % len(location_ids)],
-                location_ids[(index + 1) % len(location_ids)],
-            }
-            self.locations[location_id].routes = [
-                Route(destination, round(self.rng.uniform(1.0, 4.5), 2))
-                for destination in sorted(destinations)
-            ]
-
-        society_names = ["折光群体", "织痕共同体", "静潮群落"]
-        self.societies = {}
-        for index, name in enumerate(society_names):
-            society_id = f"society-{index + 1}"
-            self.societies[society_id] = Society(
-                society_id,
-                name,
-                "具协作学习能力的智慧碳基生命，个体尺度与代谢方式未绑定现实物种",
-                self.rng.randint(64, 88),
-                location_ids[index],
-                {
-                    "nutrient_matrix": round(self.rng.uniform(28, 46), 3),
-                    "fibrous_matter": round(self.rng.uniform(10, 22), 3),
-                    "granular_mineral": round(self.rng.uniform(10, 22), 3),
-                    "plastic_sediment": round(self.rng.uniform(5, 16), 3),
-                    "circulating_solvent": round(self.rng.uniform(16, 28), 3),
-                    "chemical_store": round(self.rng.uniform(4, 12), 3),
-                },
-                {
-                    "cohesion": round(self.rng.uniform(0.35, 0.82), 3),
-                    "novelty_seeking": round(self.rng.uniform(0.2, 0.9), 3),
-                    "risk_tolerance": round(self.rng.uniform(0.1, 0.75), 3),
-                },
-                metabolic_needs={"nutrition": 0.11, "hydration": 0.04},
-            )
-        self.knowledge_graph = KnowledgeGraph()
+        """Load scenario data without changing the domain-neutral world engine."""
+        self.scenario = build_scenario(self.scenario_name, self.rng)
+        self.resource_specs = self.scenario.resource_specs
+        self.locations = self.scenario.locations
+        self.societies = self.scenario.societies
+        self.knowledge_graph = self.scenario.knowledge_graph
         self.world = WorldEngine(
             self.rng,
             self.resource_specs,
@@ -150,7 +75,13 @@ class SimulationEngine:
         resolutions: List[Resolution] = []
 
         event = self.backend.propose_event(
-            self.locations, self.resource_specs, self.epoch, recent, self.rng
+            self.locations,
+            self.resource_specs,
+            self.epoch,
+            recent,
+            self.rng,
+            self._scenario_context(),
+            self.calendar_label(),
         )
         if event:
             events.append(event)
@@ -180,6 +111,8 @@ class SimulationEngine:
                 self.epoch,
                 recent,
                 self.rng,
+                self._scenario_context(),
+                self.calendar_label(),
             )
             plans.append(plan)
             try:
@@ -198,7 +131,13 @@ class SimulationEngine:
             plans,
             resolutions,
             self.backend.chronicle(
-                self.epoch, events, plans, readable, self.societies
+                self.epoch,
+                events,
+                plans,
+                readable,
+                self.societies,
+                self._scenario_context(),
+                self.calendar_label(),
             ),
         )
         self.history.append(record)
@@ -213,11 +152,20 @@ class SimulationEngine:
             self.step()
         return self.history
 
+    def calendar_label(self) -> str:
+        if not self.scenario:
+            return f"第{self.epoch}纪"
+        return self.scenario.calendar_label(self.epoch)
+
+    def _scenario_context(self) -> str:
+        return self.scenario.context if self.scenario else ""
+
     def state_snapshot(self) -> Dict:
         if not self.world:
             raise RuntimeError("call genesis() before taking a snapshot")
         state = {
             "seed": self.seed,
+            "scenario": self.scenario_name,
             "epoch": self.epoch,
             "resource_specs": self.resource_specs,
             "locations": self.locations,

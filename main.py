@@ -10,7 +10,7 @@ def print_state(engine: SimulationEngine) -> None:
     for society in engine.societies.values():
         status = "存续" if society.is_alive else "灭绝"
         print(
-            f"{society.name}：{status}，种群 {society.population}，"
+            f"{society.name}：{status}，人口规模 {society.population}，"
             f"地点 {engine.locations[society.location_id].name}，"
             f"知识 {len(society.knowledge)}，组织 {len(society.organizations)}"
         )
@@ -35,6 +35,12 @@ def main() -> None:
     parser.add_argument("epochs", nargs="?", type=int, default=8, help="推演纪数")
     parser.add_argument("--seed", type=int, default=42, help="确定性随机种子")
     parser.add_argument(
+        "--scenario",
+        choices=("warring-states", "open-origin"),
+        default="warring-states",
+        help="开局场景；默认从公元前230年的战国七雄开始",
+    )
+    parser.add_argument(
         "--planner",
         choices=("heuristic", "cli"),
         default="cli",
@@ -42,10 +48,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    engine = SimulationEngine(seed=args.seed, planner_mode=args.planner)
+    engine = SimulationEngine(
+        seed=args.seed, planner_mode=args.planner, scenario=args.scenario
+    )
     locations, societies = engine.genesis()
-    print(f"【创世】seed={args.seed}，生成 {len(locations)} 个地点与 {len(societies)} 个社会。")
-    print("开局是智慧碳基生命场景，但资源、知识、制度和发展方向均未绑定现实历史。")
+    print(
+        f"【开局】{engine.scenario.title}，seed={args.seed}，"
+        f"生成 {len(locations)} 个地点与 {len(societies)} 个社会。"
+    )
+    print(engine.scenario.context)
     if engine.backend.cli_tool:
         model = f" / {engine.backend.cli_model}" if engine.backend.cli_model else ""
         print(

@@ -34,6 +34,8 @@ class LLMBackend:
         "hydration": "溶剂亲和性",
         "energy": "能量释放",
         "processed": "加工稳定性",
+        "transport": "运输用途",
+        "portable": "便于携带",
     }
     EFFECT_NAMES = {
         "acquire_efficiency": "资源取得效率",
@@ -84,6 +86,8 @@ class LLMBackend:
         epoch: int,
         recent_history: Sequence[str],
         rng: random.Random,
+        scenario_context: str,
+        calendar_label: str,
     ) -> OpenPlan:
         if self.mode == "cli" and self.cli_tool:
             prompt = self._plan_prompt(
@@ -95,6 +99,8 @@ class LLMBackend:
                 structures,
                 epoch,
                 recent_history,
+                scenario_context,
+                calendar_label,
             )
             parsed = self._parse_plan(self._query_cli(prompt), actor.id)
             if parsed:
@@ -118,11 +124,20 @@ class LLMBackend:
         epoch: int,
         recent_history: Sequence[str],
         rng: random.Random,
+        scenario_context: str,
+        calendar_label: str,
     ) -> Optional[OpenEvent]:
         if rng.random() > 0.72:
             return None
         if self.mode == "cli" and self.cli_tool:
-            prompt = self._event_prompt(locations, resource_specs, epoch, recent_history)
+            prompt = self._event_prompt(
+                locations,
+                resource_specs,
+                epoch,
+                recent_history,
+                scenario_context,
+                calendar_label,
+            )
             parsed = self._parse_event(self._query_cli(prompt))
             if parsed:
                 self.stats["llm_event"] += 1
@@ -137,10 +152,18 @@ class LLMBackend:
         plans: List[OpenPlan],
         resolution_lines: List[str],
         societies: Dict[str, Society],
+        scenario_context: str,
+        calendar_label: str,
     ) -> str:
         if self.mode == "cli" and self.cli_tool:
             prompt = self._chronicle_prompt(
-                epoch, events, plans, resolution_lines, societies
+                epoch,
+                events,
+                plans,
+                resolution_lines,
+                societies,
+                scenario_context,
+                calendar_label,
             )
             text = self._query_cli(prompt)
             if text:
@@ -148,7 +171,7 @@ class LLMBackend:
                 return self._clean_prose(text)
         self.stats["fallback_chronicle"] += 1
         return self._fallback_chronicle(
-            epoch, events, plans, resolution_lines, societies
+            epoch, events, plans, resolution_lines, societies, calendar_label
         )
 
     @staticmethod
@@ -158,8 +181,9 @@ class LLMBackend:
         plans: List[OpenPlan],
         resolution_lines: List[str],
         societies: Dict[str, Society],
+        calendar_label: str,
     ) -> str:
-        lines = [f"【人工历史 第 {epoch} 纪】"]
+        lines = [f"【{calendar_label}】"]
         for event in events:
             lines.append(f"本纪，{event.name}。{event.description}")
         intentions = []
@@ -275,7 +299,7 @@ class LLMBackend:
             return None
         resource_id = rng.choice(observable)
         spec = specs[resource_id]
-        method = rng.choice(["循环加载", "分层对照", "长周期浸润", "冷热交替", "群体记录"])
+        method = rng.choice(["反复试用", "分组比较", "长期观察", "冷热试验", "多人记录"])
         dominant_tag = sorted(spec.tags)[rng.randrange(len(spec.tags))]
         dominant_label = self.TAG_NAMES.get(dominant_tag, dominant_tag)
         capability = f"操控:{dominant_tag}:{resource_id}"
@@ -292,11 +316,11 @@ class LLMBackend:
         if risk_effect == "resource_loss":
             risk["resource_id"] = resource_id
         materials = {resource_id: 3.0} if actor.inventory.get(resource_id, 0.0) >= 3 else {}
-        title = f"以{method}探索{spec.name}的{dominant_label}响应"
+        title = f"用{method}研究{spec.name}的{dominant_label}"
         return OpenPlan(
             actor.id,
             title,
-            f"建立关于{spec.name}的新因果知识，而非追随既定技术顺序",
+            f"弄清{spec.name}在实际使用中的规律",
             [
                 PlanStep(
                     "research",
@@ -305,7 +329,7 @@ class LLMBackend:
                         "materials": materials,
                         "knowledge": {
                             "name": title,
-                            "description": f"比较{spec.name}在{method}条件下的变化并归纳可复现操作",
+                            "description": f"比较{spec.name}在{method}中的变化，并整理成可以重复使用的办法",
                             "prerequisites": prerequisite,
                             "observations": [f"记录{resource_id}处理前后的质量", f"重复{method}并比较响应方差"],
                             "capabilities": [capability],
@@ -397,10 +421,15 @@ class LLMBackend:
 
     @staticmethod
     def _organization_plan(actor: Society, epoch: int, rng: random.Random) -> OpenPlan:
-        purpose = rng.choice(["轮换照料", "争议调停", "观测归档", "资源配给", "远行互助"])
-        rule = rng.choice(["定期轮替", "公开记账", "随机抽签", "按需领取", "双重见证"])
+        human_history = "人类国家" in actor.species_profile
+        if human_history:
+            purpose = rng.choice(["粮仓管理", "灾民救济", "道路维护", "官吏监察", "边境运输"])
+            rule = rng.choice(["轮值办理", "公开账目", "分区负责", "按户配给", "两级复核"])
+        else:
+            purpose = rng.choice(["轮换照料", "争议调停", "观测归档", "资源配给", "远行互助"])
+            rule = rng.choice(["定期轮替", "公开记账", "随机抽签", "按需领取", "双重见证"])
         effect = rng.choice(["coordination", "knowledge_retention", "distribution"])
-        name = f"{purpose}{rule}会"
+        name = f"{purpose}署" if human_history else f"{purpose}{rule}会"
         return OpenPlan(
             actor.id,
             f"建立{name}",
@@ -413,7 +442,7 @@ class LLMBackend:
                         "name": name,
                         "purpose": purpose,
                         "members": min(actor.population, rng.randint(12, 28)),
-                        "rules": [rule, "每三纪复议一次规则"],
+                        "rules": [rule, "每三年复议一次规则" if human_history else "每三纪复议一次规则"],
                         "effects": {effect: round(rng.uniform(0.1, 0.3), 3)},
                         "materials": {},
                         "risks": [{"name": f"{purpose}权责固化", "probability": 0.16, "effect": "organization_strain", "magnitude": 0.08}],
@@ -459,10 +488,11 @@ class LLMBackend:
             return None
         resource_id = rng.choice(options)
         amount = min(location.stocks[resource_id], rng.uniform(8, 20))
+        human_history = "人类国家" in actor.species_profile
         return OpenPlan(
             actor.id,
-            f"试采{specs[resource_id].name}",
-            "扩大可操作材料范围，同时保留局部存量余量",
+            f"调集{specs[resource_id].name}" if human_history else f"试采{specs[resource_id].name}",
+            "补充官府仓储，同时给地方保留余量" if human_history else "扩大可操作材料范围，同时保留局部存量余量",
             [PlanStep("acquire", {"resources": {resource_id: round(amount, 2)}})],
         )
 
@@ -472,6 +502,33 @@ class LLMBackend:
         specs: Dict[str, ResourceSpec],
         rng: random.Random,
     ) -> OpenEvent:
+        if "grain" in specs and "water" in specs:
+            location = rng.choice(list(locations.values()))
+            water_stock = location.stocks.get("water", 0.0)
+            water_capacity = location.capacities.get("water", water_stock)
+            if rng.random() < 0.5 and water_capacity - water_stock >= 2.0:
+                amount = round(min(water_capacity - water_stock, rng.uniform(3.0, 8.0)), 3)
+                return OpenEvent(
+                    f"{location.name}出现持续降雨",
+                    "连日降雨补充了河渠和井泉，也增加了低地积水的风险。",
+                    ["暖湿气流持续进入当地", "降水多于地表蒸发和排水"],
+                    rng.randint(1, 2),
+                    {location.id: {"water": amount}},
+                    {},
+                    {"water": amount},
+                    {},
+                )
+            amount = round(min(water_stock * 0.06, rng.uniform(3.0, 7.0)), 3)
+            return OpenEvent(
+                f"{location.name}遭遇少雨天气",
+                "降雨减少，河渠和井泉的水量随蒸发而下降。",
+                ["干燥气流持续影响当地", "蒸发量超过降水补充"],
+                rng.randint(1, 2),
+                {location.id: {"water": -amount}},
+                {},
+                {},
+                {"water": amount},
+            )
         bounded_resources = [
             resource_id
             for resource_id in specs
@@ -664,9 +721,13 @@ class LLMBackend:
         structures: Dict[str, Structure],
         epoch: int,
         recent_history: Sequence[str],
+        scenario_context: str,
+        calendar_label: str,
     ) -> str:
         state = {
             "epoch": epoch,
+            "calendar": calendar_label,
+            "scenario": scenario_context,
             "actor": public_dict(actor),
             "location": public_dict(location),
             "resources": {key: public_dict(value) for key, value in resource_specs.items()},
@@ -677,9 +738,11 @@ class LLMBackend:
         }
         return (
             "你是开放式人工历史模拟中一个独立的社会 Agent，只代表 actor，不代表其他社会。"
+            "背景资料只规定开局，不规定未来；不得因为熟悉真实历史而照抄或强行纠正为真实结果。"
             "把 actor.traits 视为长期性格，把其地点、库存、知识和组织视为自身处境。"
             "你的选择应延续自身经历与立场，不要为了与其他社会显得不同而随机表演，也不要替其他社会统筹。"
-            "根据状态提出一个中文计划。"
+            "根据状态提出一个中文计划。标题、目标与理由须使用这个时代的人能够理解的常用词，"
+            "在人类历史场景中写粮食、水利、道路、城防、官署、百姓、使者等，不写抽象科幻术语。"
             "不要套用现实科技树，也不要宣称结果已经成功。步骤使用物理 DSL："
             "acquire, transform, construct, relocate, research, communicate, organize。"
             "它们不是历史行动菜单。可以创造任意目标，但必须组合为一至六个可执行步骤。"
@@ -707,19 +770,28 @@ class LLMBackend:
         plans: List[OpenPlan],
         resolution_lines: List[str],
         societies: Dict[str, Society],
+        scenario_context: str,
+        calendar_label: str,
     ) -> str:
         facts = {
             "epoch": epoch,
+            "calendar": calendar_label,
+            "scenario": scenario_context,
             "events": [public_dict(item) for item in events],
             "plans": [public_dict(item) for item in plans],
             "resolutions": resolution_lines,
             "end_state": [public_dict(item) for item in societies.values()],
         }
         return (
-            "你是人工世界的史家。请把以下已经由物理引擎裁定的事实写成可读性好的中文历史书正文。"
-            "第一行用【第N纪：简短纪名】作标题，其后写三至五段连贯叙事。"
+            "你是一位面向普通读者写作的中国史家。请把以下已经裁定的事实写成通俗历史正文。"
+            f"第一行必须用【{calendar_label}：简短纪名】作标题，其后写三至五段连贯叙事。"
             "先交代环境变化，再叙述各社会为何行动、行动如何受阻或完成，最后写本纪留下的局势。"
-            "语言清楚、克制、有历史感，不用项目符号，不逐字段抄写，不写成运行日志。"
+            "文风接近清楚的中学历史课本与通俗历史读物。每句话只说一两件事，少用长句，"
+            "难词能换成常用词就换，不卖弄文言，不堆砌地理、水文或制度术语。"
+            "在人类中国场景中，只写国家、朝廷、官员、军队、百姓、粮食、河流、道路、城邑等自然说法。"
+            "不得出现 Agent、LLM、DSL、primitive、WorldEngine、resource id、知识节点、规模单位、"
+            "种群、代谢、栖息适宜度、基质、溶剂、势差或模型边界等模拟术语。"
+            "不用项目符号，不逐字段抄写，不写成运行日志，也不要逐国机械报账。"
             "不得添加输入中没有的人物、因果、成果、伤亡、技术或事件；提案不得写成已经实现，"
             "只有 resolutions 中确认完成的事情才能作为结果。不要评价这是游戏或模拟器。只输出正文。事实：\n"
             + json.dumps(facts, ensure_ascii=False, sort_keys=True)
@@ -731,9 +803,13 @@ class LLMBackend:
         resource_specs: Dict[str, ResourceSpec],
         epoch: int,
         recent_history: Sequence[str],
+        scenario_context: str,
+        calendar_label: str,
     ) -> str:
         state = {
             "epoch": epoch,
+            "calendar": calendar_label,
+            "scenario": scenario_context,
             "locations": {key: public_dict(value) for key, value in locations.items()},
             "resources": {key: public_dict(value) for key, value in resource_specs.items()},
             "recent_history": list(recent_history),
@@ -743,6 +819,8 @@ class LLMBackend:
             "提出一个有物理原因且没有预设类别的中文世界事件。只输出 JSON。字段必须为 name, description, "
             "causes, duration, location_resource_deltas, location_property_deltas, external_inputs, "
             "external_outputs。资源变化必须满足质量守恒，跨模拟边界的物质必须显式记入 input 或 output。"
-            "不要从灾害清单选择。世界状态：\n"
+            "不要从灾害清单选择，也不要为了贴合真实历史而强行制造已知事件。"
+            "在人类历史场景中，name、description 与 causes 必须使用旱情、降雨、河水、山洪、寒潮、"
+            "粮食歉收等普通读者能懂的说法，不写抽象物理术语；内部字段仍使用给定 id。世界状态：\n"
             + json.dumps(state, ensure_ascii=False, sort_keys=True)
         )

@@ -2,7 +2,9 @@
 
 `civ-sandbox` 不再模拟一组预先命名的文明游戏动作，也不再沿固定时代和科技树推进。它运行一个更小但完整的闭环：自主 Agent 提出开放计划与开放事件，compiler 把提案约束为通用物理操作，`WorldEngine` 再根据当前世界状态决定能否执行、需要多久、产生什么结果，以及触发哪些副作用。
 
-第一版场景从具协作学习能力的智慧碳基生命开始。底层没有 `Earth`、`human`、`wheat`、`iron` 等专用实体，也没有农业、青铜、铁器、工业、信息时代等顺序。
+默认场景从公元前 230 年的战国七雄开始。此前的历史是各国共同记忆，此后的道路完全开放：秦国不保证统一，六国也不保证灭亡。人类、国家、粮食和铁料都只存在于场景数据中，底层引擎仍没有 `Earth`、`human`、`wheat`、`iron` 等专用逻辑，也没有固定时代或科技树。
+
+原先的非地球智慧碳基生命开局仍可通过 `--scenario open-origin` 运行，用来验证底层没有被中国历史写死。
 
 ## 最小架构
 
@@ -38,10 +40,16 @@ World state + 动态 knowledge graph + 中文编年记录
 
 ## 运行
 
-默认调用本机已登录的 LLM CLI。每个社会由一次独立的 Agent 调用根据自身性格、资源、地点、知识和历史提出计划，环境 Agent 另行提出开放事件，史家 Agent 再把结算事实写成历史书体中文记录：
+默认调用本机已登录的 LLM CLI。战国七雄分别由独立的 Agent 调用，根据自身国情、资源、地点、知识和历史提出计划。环境 Agent 另行提出开放事件，史家 Agent 再把结算事实写成普通读者能够看懂的中国历史正文：
 
 ```bash
 python3 main.py 12 --seed 42
+```
+
+运行原先的通用生命开局：
+
+```bash
+python3 main.py 12 --seed 42 --scenario open-origin
 ```
 
 需要完全按 seed 重放时，显式改用确定性离线 planner：
@@ -78,6 +86,7 @@ python3 -m unittest discover -s tests -v
 
 ```text
 models.py             开放计划、开放事件、世界状态与知识图谱
+scenarios.py          战国末年与通用生命开局数据，不侵入底层引擎
 plan_compiler.py      开放计划到通用 primitives 的确定性编译
 event_compiler.py     无类别事件的因果与数值检查
 world_engine.py       唯一能修改世界状态的确定性执行器

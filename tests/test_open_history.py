@@ -187,8 +187,12 @@ class WorldConstraintTests(unittest.TestCase):
 
 class SimulationTests(unittest.TestCase):
     def test_same_seed_replays_exactly(self):
-        first = SimulationEngine(seed=73, planner_mode="heuristic")
-        second = SimulationEngine(seed=73, planner_mode="heuristic")
+        first = SimulationEngine(
+            seed=73, planner_mode="heuristic", scenario="open-origin"
+        )
+        second = SimulationEngine(
+            seed=73, planner_mode="heuristic", scenario="open-origin"
+        )
         first.run(14)
         second.run(14)
         self.assertEqual(first.state_snapshot(), second.state_snapshot())
@@ -197,7 +201,9 @@ class SimulationTests(unittest.TestCase):
         signatures = set()
         knowledge_names = []
         for seed in range(8):
-            engine = SimulationEngine(seed=seed, planner_mode="heuristic")
+            engine = SimulationEngine(
+                seed=seed, planner_mode="heuristic", scenario="open-origin"
+            )
             engine.run(18)
             signatures.add(engine.path_signature())
             knowledge_names.extend(node.name for node in engine.knowledge_graph.nodes.values())
@@ -210,13 +216,39 @@ class SimulationTests(unittest.TestCase):
         outcomes = []
         society_counts = []
         for seed in (0, 2, 4, 10):
-            engine = SimulationEngine(seed=seed, planner_mode="heuristic")
+            engine = SimulationEngine(
+                seed=seed, planner_mode="heuristic", scenario="open-origin"
+            )
             engine.run(120)
             outcomes.append(sum(item.is_alive for item in engine.societies.values()))
             society_counts.append(len(engine.societies))
         self.assertTrue(any(alive == 0 for alive in outcomes))
         self.assertTrue(any(alive > 0 for alive in outcomes))
         self.assertTrue(any(count > 3 for count in society_counts))
+
+    def test_default_scenario_is_open_warring_states_history(self):
+        engine = SimulationEngine(seed=42, planner_mode="heuristic")
+        engine.genesis()
+        self.assertEqual(
+            {item.name for item in engine.societies.values()},
+            {"秦国", "韩国", "赵国", "魏国", "楚国", "燕国", "齐国"},
+        )
+        self.assertEqual(engine.calendar_label(), "公元前230年")
+        engine.step()
+        self.assertEqual(engine.calendar_label(), "公元前230年")
+        self.assertIn("没有既定剧本", engine.scenario.context)
+        self.assertTrue(
+            all("人类国家" in item.species_profile for item in engine.societies.values())
+        )
+
+    def test_scenario_data_does_not_replace_generic_origin(self):
+        engine = SimulationEngine(
+            seed=42, planner_mode="heuristic", scenario="open-origin"
+        )
+        engine.genesis()
+        self.assertEqual(len(engine.societies), 3)
+        self.assertNotIn("grain", engine.resource_specs)
+        self.assertIn("nutrient_matrix", engine.resource_specs)
 
 
 if __name__ == "__main__":
