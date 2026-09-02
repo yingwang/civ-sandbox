@@ -111,11 +111,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--mode",
-        choices=("open-world", "real-history", "classic"),
-        default="open-world",
-        help="推演模式：默认 open-world (遵循物理与经济学规律的真正开放分叉世界)，real-history (真实历史全景)，classic (离线规则沙盘)",
+        choices=("ledger", "open-world", "real-history", "classic"),
+        default="ledger",
+        help="推演模式：默认 ledger (规则与随机数结算、模型只提案与记述的账本引擎)，open-world (单次调用的开放提示词模式)，real-history (真实历史全景)，classic (离线规则沙盘)",
     )
     parser.add_argument("--seed", type=int, default=42, help="确定性随机种子")
+    parser.add_argument("--no-llm", action="store_true", help="账本模式下不调用模型，只用离线启发式提案与模板纪事（用于测试与校准）")
     parser.add_argument(
         "--output",
         type=Path,
@@ -139,6 +140,15 @@ def main() -> None:
     if args.planner == "heuristic" and "--mode" not in sys.argv:
         args.mode = "classic"
 
+    if args.mode == "ledger":
+        from ledger_engine import LedgerEngine
+        out_path = args.output or Path(".artifacts/china-ledger-history-2026.md")
+        print("=" * 75)
+        print("【Civ-Sandbox · 账本模式】规则与骰子结算气候、疫病、收成、战争与政权存亡；模型只替各区域提案，并据账本记述。")
+        print(f"推演纪数：{args.epochs or '全部'}，随机种子：{args.seed}，速率见 ledger_config.json")
+        print("=" * 75)
+        LedgerEngine(seed=args.seed, llm_enabled=not args.no_llm).run(epochs=args.epochs, output_path=out_path)
+        return
     if args.mode == "open-world":
         epochs = args.epochs if args.epochs is not None else 16
         out_path = args.output or Path(".artifacts/china-open-world-history-2026.md")

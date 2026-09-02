@@ -1,0 +1,709 @@
+{
+  "_comment": "账本引擎的全部速率与开局参数。改这里，不改提示词。数值单位：人口为百万人，比率为 0 到 1。",
+  "llm": {
+    "tool": "agy",
+    "model": "gemini-3.7-flash-high",
+    "timeout_seconds": 180,
+    "max_parallel_calls": 4
+  },
+  "eras": [
+    [
+      "公元前230年至公元前150年",
+      -230,
+      -150
+    ],
+    [
+      "公元前149年至公元前50年",
+      -149,
+      -50
+    ],
+    [
+      "公元前49年至公元50年",
+      -49,
+      50
+    ],
+    [
+      "公元51年至公元150年",
+      51,
+      150
+    ],
+    [
+      "公元151年至公元250年",
+      151,
+      250
+    ],
+    [
+      "公元251年至公元350年",
+      251,
+      350
+    ],
+    [
+      "公元351年至公元450年",
+      351,
+      450
+    ],
+    [
+      "公元451年至公元550年",
+      451,
+      550
+    ],
+    [
+      "公元551年至公元650年",
+      551,
+      650
+    ],
+    [
+      "公元651年至公元750年",
+      651,
+      750
+    ],
+    [
+      "公元751年至公元850年",
+      751,
+      850
+    ],
+    [
+      "公元851年至公元950年",
+      851,
+      950
+    ],
+    [
+      "公元951年至公元1050年",
+      951,
+      1050
+    ],
+    [
+      "公元1051年至公元1150年",
+      1051,
+      1150
+    ],
+    [
+      "公元1151年至公元1250年",
+      1151,
+      1250
+    ],
+    [
+      "公元1251年至公元1350年",
+      1251,
+      1350
+    ],
+    [
+      "公元1351年至公元1450年",
+      1351,
+      1450
+    ],
+    [
+      "公元1451年至公元1550年",
+      1451,
+      1550
+    ],
+    [
+      "公元1551年至公元1650年",
+      1551,
+      1650
+    ],
+    [
+      "公元1651年至公元1750年",
+      1651,
+      1750
+    ],
+    [
+      "公元1751年至公元1850年",
+      1751,
+      1850
+    ],
+    [
+      "公元1851年至公元1950年",
+      1851,
+      1950
+    ],
+    [
+      "公元1951年至公元2026年",
+      1951,
+      2026
+    ]
+  ],
+  "regions": {
+    "huabei": {
+      "name": "黄河流域",
+      "base_capacity": 40,
+      "climate_sensitivity": 1.0,
+      "terrain_defense": 1.0,
+      "coast": true,
+      "steppe_border": true,
+      "neighbors": [
+        "jianghuai",
+        "caoyuan",
+        "xiyu"
+      ]
+    },
+    "jianghuai": {
+      "name": "长江流域",
+      "base_capacity": 35,
+      "climate_sensitivity": 0.7,
+      "terrain_defense": 1.3,
+      "coast": true,
+      "steppe_border": false,
+      "neighbors": [
+        "huabei",
+        "lingnan",
+        "xiyu"
+      ]
+    },
+    "lingnan": {
+      "name": "岭南与南洋",
+      "base_capacity": 18,
+      "climate_sensitivity": 0.6,
+      "terrain_defense": 1.4,
+      "coast": true,
+      "steppe_border": false,
+      "neighbors": [
+        "jianghuai",
+        "yindu"
+      ]
+    },
+    "caoyuan": {
+      "name": "北方草原",
+      "base_capacity": 6,
+      "climate_sensitivity": 1.6,
+      "terrain_defense": 0.8,
+      "coast": false,
+      "steppe_border": true,
+      "neighbors": [
+        "huabei",
+        "xiyu"
+      ]
+    },
+    "xiyu": {
+      "name": "西域与中亚",
+      "base_capacity": 10,
+      "climate_sensitivity": 1.3,
+      "terrain_defense": 1.2,
+      "coast": false,
+      "steppe_border": true,
+      "neighbors": [
+        "huabei",
+        "jianghuai",
+        "caoyuan",
+        "yindu",
+        "xiya"
+      ]
+    },
+    "yindu": {
+      "name": "印度次大陆",
+      "base_capacity": 38,
+      "climate_sensitivity": 0.9,
+      "terrain_defense": 1.1,
+      "coast": true,
+      "steppe_border": false,
+      "neighbors": [
+        "xiyu",
+        "lingnan",
+        "xiya",
+        "feizhou"
+      ]
+    },
+    "xiya": {
+      "name": "西亚与地中海",
+      "base_capacity": 30,
+      "climate_sensitivity": 1.0,
+      "terrain_defense": 1.1,
+      "coast": true,
+      "steppe_border": true,
+      "neighbors": [
+        "xiyu",
+        "yindu",
+        "feizhou"
+      ]
+    },
+    "feizhou": {
+      "name": "非洲",
+      "base_capacity": 22,
+      "climate_sensitivity": 1.1,
+      "terrain_defense": 1.2,
+      "coast": true,
+      "steppe_border": false,
+      "neighbors": [
+        "xiya",
+        "yindu"
+      ]
+    },
+    "meizhou": {
+      "name": "美洲",
+      "base_capacity": 30,
+      "climate_sensitivity": 1.0,
+      "terrain_defense": 1.2,
+      "coast": true,
+      "steppe_border": false,
+      "neighbors": []
+    }
+  },
+  "initial_polities": [
+    {
+      "name": "秦",
+      "region": "huabei",
+      "population": 5.0,
+      "share": 0.35,
+      "fiscal": 0.7,
+      "cohesion": 0.75,
+      "military": 0.8,
+      "legitimacy": 0.5,
+      "institutions": [
+        "郡县与军功爵",
+        "成文律令"
+      ]
+    },
+    {
+      "name": "齐",
+      "region": "huabei",
+      "population": 4.0,
+      "share": 0.25,
+      "fiscal": 0.75,
+      "cohesion": 0.5,
+      "military": 0.45,
+      "legitimacy": 0.55,
+      "institutions": [
+        "盐铁官营",
+        "学宫"
+      ]
+    },
+    {
+      "name": "赵",
+      "region": "huabei",
+      "population": 3.0,
+      "share": 0.2,
+      "fiscal": 0.45,
+      "cohesion": 0.55,
+      "military": 0.7,
+      "legitimacy": 0.5,
+      "institutions": [
+        "骑兵军制"
+      ]
+    },
+    {
+      "name": "魏与韩",
+      "region": "huabei",
+      "population": 3.5,
+      "share": 0.2,
+      "fiscal": 0.5,
+      "cohesion": 0.4,
+      "military": 0.5,
+      "legitimacy": 0.45,
+      "institutions": [
+        "变法遗制"
+      ]
+    },
+    {
+      "name": "楚",
+      "region": "jianghuai",
+      "population": 5.5,
+      "share": 0.7,
+      "fiscal": 0.55,
+      "cohesion": 0.45,
+      "military": 0.55,
+      "legitimacy": 0.55,
+      "institutions": [
+        "封君分权"
+      ]
+    },
+    {
+      "name": "燕",
+      "region": "caoyuan",
+      "population": 1.5,
+      "share": 0.3,
+      "fiscal": 0.35,
+      "cohesion": 0.5,
+      "military": 0.5,
+      "legitimacy": 0.5,
+      "institutions": [
+        "边郡屯戍"
+      ]
+    },
+    {
+      "name": "草原诸部",
+      "region": "caoyuan",
+      "population": 1.0,
+      "share": 0.7,
+      "fiscal": 0.2,
+      "cohesion": 0.4,
+      "military": 0.65,
+      "legitimacy": 0.4,
+      "institutions": [
+        "部落联盟"
+      ]
+    },
+    {
+      "name": "西域城邦",
+      "region": "xiyu",
+      "population": 1.2,
+      "share": 1.0,
+      "fiscal": 0.5,
+      "cohesion": 0.35,
+      "military": 0.3,
+      "legitimacy": 0.5,
+      "institutions": [
+        "绿洲城邦"
+      ]
+    },
+    {
+      "name": "南岭与百越诸部",
+      "region": "lingnan",
+      "population": 2.0,
+      "share": 1.0,
+      "fiscal": 0.25,
+      "cohesion": 0.4,
+      "military": 0.35,
+      "legitimacy": 0.5,
+      "institutions": [
+        "部落联盟"
+      ]
+    },
+    {
+      "name": "恒河列国",
+      "region": "yindu",
+      "population": 30.0,
+      "share": 0.6,
+      "fiscal": 0.55,
+      "cohesion": 0.45,
+      "military": 0.55,
+      "legitimacy": 0.6,
+      "institutions": [
+        "种姓秩序",
+        "王国官署"
+      ]
+    },
+    {
+      "name": "南印诸邦",
+      "region": "yindu",
+      "population": 8.0,
+      "share": 0.4,
+      "fiscal": 0.45,
+      "cohesion": 0.4,
+      "military": 0.4,
+      "legitimacy": 0.55,
+      "institutions": [
+        "海港商团"
+      ]
+    },
+    {
+      "name": "地中海霸权",
+      "region": "xiya",
+      "population": 12.0,
+      "share": 0.5,
+      "fiscal": 0.7,
+      "cohesion": 0.6,
+      "military": 0.75,
+      "legitimacy": 0.55,
+      "institutions": [
+        "公民军团",
+        "成文法"
+      ]
+    },
+    {
+      "name": "两河与波斯诸国",
+      "region": "xiya",
+      "population": 10.0,
+      "share": 0.5,
+      "fiscal": 0.55,
+      "cohesion": 0.45,
+      "military": 0.55,
+      "legitimacy": 0.5,
+      "institutions": [
+        "王廷总督制"
+      ]
+    },
+    {
+      "name": "尼罗河与萨赫勒诸国",
+      "region": "feizhou",
+      "population": 8.0,
+      "share": 1.0,
+      "fiscal": 0.45,
+      "cohesion": 0.45,
+      "military": 0.4,
+      "legitimacy": 0.55,
+      "institutions": [
+        "神庙王权"
+      ]
+    },
+    {
+      "name": "中美洲城邦",
+      "region": "meizhou",
+      "population": 5.0,
+      "share": 0.5,
+      "fiscal": 0.4,
+      "cohesion": 0.5,
+      "military": 0.4,
+      "legitimacy": 0.6,
+      "institutions": [
+        "祭司城邦"
+      ]
+    },
+    {
+      "name": "安第斯诸邦",
+      "region": "meizhou",
+      "population": 4.0,
+      "share": 0.5,
+      "fiscal": 0.4,
+      "cohesion": 0.5,
+      "military": 0.4,
+      "legitimacy": 0.6,
+      "institutions": [
+        "梯田村社"
+      ]
+    }
+  ],
+  "initial_knowledge": {
+    "huabei": [
+      "irrigation",
+      "iron_bloom",
+      "script",
+      "bronze_cast",
+      "crossbow",
+      "cavalry"
+    ],
+    "jianghuai": [
+      "irrigation",
+      "iron_bloom",
+      "script",
+      "bronze_cast",
+      "boats"
+    ],
+    "lingnan": [
+      "boats",
+      "wet_rice"
+    ],
+    "caoyuan": [
+      "cavalry",
+      "bronze_cast",
+      "herding"
+    ],
+    "xiyu": [
+      "irrigation",
+      "bronze_cast",
+      "caravan"
+    ],
+    "yindu": [
+      "irrigation",
+      "iron_bloom",
+      "script",
+      "boats",
+      "wet_rice"
+    ],
+    "xiya": [
+      "irrigation",
+      "iron_bloom",
+      "script",
+      "bronze_cast",
+      "boats",
+      "geometry"
+    ],
+    "feizhou": [
+      "irrigation",
+      "iron_bloom",
+      "script",
+      "boats"
+    ],
+    "meizhou": [
+      "maize",
+      "terrace",
+      "script"
+    ]
+  },
+  "seed_nodes": {
+    "irrigation": {
+      "name": "渠灌与蓄水",
+      "kind": "technique",
+      "prereqs": [],
+      "capacity_bonus": 0.15
+    },
+    "wet_rice": {
+      "name": "水田稻作",
+      "kind": "technique",
+      "prereqs": [],
+      "capacity_bonus": 0.2
+    },
+    "maize": {
+      "name": "玉米驯化种植",
+      "kind": "technique",
+      "prereqs": [],
+      "capacity_bonus": 0.15
+    },
+    "terrace": {
+      "name": "山地梯田",
+      "kind": "technique",
+      "prereqs": [],
+      "capacity_bonus": 0.1
+    },
+    "herding": {
+      "name": "大规模畜牧",
+      "kind": "technique",
+      "prereqs": [],
+      "capacity_bonus": 0.05
+    },
+    "iron_bloom": {
+      "name": "块炼铁",
+      "kind": "technique",
+      "prereqs": [],
+      "military_bonus": 0.05
+    },
+    "bronze_cast": {
+      "name": "青铜范铸",
+      "kind": "technique",
+      "prereqs": [],
+      "military_bonus": 0.03
+    },
+    "script": {
+      "name": "文字与簿册",
+      "kind": "technique",
+      "prereqs": [],
+      "literacy_bonus": 0.1
+    },
+    "geometry": {
+      "name": "测量几何",
+      "kind": "principle",
+      "prereqs": [
+        "script"
+      ],
+      "research_bonus": 0.05
+    },
+    "crossbow": {
+      "name": "机括弩",
+      "kind": "technique",
+      "prereqs": [
+        "bronze_cast"
+      ],
+      "military_bonus": 0.05
+    },
+    "cavalry": {
+      "name": "骑兵驯养与骑射",
+      "kind": "technique",
+      "prereqs": [
+        "herding"
+      ],
+      "military_bonus": 0.08
+    },
+    "boats": {
+      "name": "河海舟楫",
+      "kind": "technique",
+      "prereqs": [],
+      "trade_bonus": 0.1
+    },
+    "caravan": {
+      "name": "长途驼队",
+      "kind": "technique",
+      "prereqs": [],
+      "trade_bonus": 0.1
+    }
+  },
+  "rates": {
+    "pop_growth_base": 0.18,
+    "capacity_per_node_default": 0.1,
+    "climate_capacity_swing": 0.15,
+    "epidemic_base": 0.04,
+    "epidemic_per_urban": 0.25,
+    "epidemic_per_link": 0.02,
+    "epidemic_mortality": [
+      0.05,
+      0.3
+    ],
+    "epidemic_spread": 0.35,
+    "research_base": 0.18,
+    "research_urban_weight": 0.6,
+    "research_literacy_weight": 0.6,
+    "research_fiscal_weight": 0.3,
+    "research_war_penalty": 0.5,
+    "diffusion_base": 0.25,
+    "diffusion_trade_weight": 0.4,
+    "knowledge_loss_on_collapse": 0.25,
+    "stress_fiscal_weight": 0.35,
+    "stress_cohesion_weight": 0.35,
+    "stress_legitimacy_weight": 0.2,
+    "stress_famine": 0.25,
+    "stress_plague": 0.2,
+    "stress_defeat": 0.3,
+    "sclerosis_per_era": 0.03,
+    "collapse_threshold": 0.62,
+    "collapse_probability_scale": 1.2,
+    "war_base_probability": 0.35,
+    "war_logistics_penalty": 0.25,
+    "war_defender_bonus": 0.15,
+    "conquest_share_gain": 0.5,
+    "war_population_loss": [
+      0.02,
+      0.12
+    ],
+    "fiscal_recovery": 0.06,
+    "cohesion_recovery": 0.05,
+    "legitimacy_decay": 0.02,
+    "trade_link_probability": 0.3,
+    "ocean_contact_probability": 0.05,
+    "ocean_contact_requires": [
+      "deep_sea_navigation"
+    ],
+    "other_bonus_per_node": 0.05,
+    "absorb_share_below": 0.08,
+    "absorb_probability": 0.5
+  },
+  "forbidden_names": [
+    "汉朝",
+    "大汉",
+    "唐朝",
+    "大唐",
+    "宋朝",
+    "大宋",
+    "元朝",
+    "大元",
+    "明朝",
+    "大明",
+    "清朝",
+    "大清",
+    "隋朝",
+    "大隋",
+    "西晋",
+    "东晋",
+    "北魏",
+    "南北朝",
+    "五代十国",
+    "辽国",
+    "金国",
+    "西夏",
+    "蒙古帝国",
+    "秦朝",
+    "秦帝国",
+    "罗马",
+    "拜占庭",
+    "阿拉伯帝国",
+    "奥斯曼",
+    "波斯帝国",
+    "孔雀王朝",
+    "莫卧儿",
+    "阿兹特克",
+    "印加",
+    "玛雅",
+    "大英",
+    "英国",
+    "法国",
+    "美国",
+    "美利坚",
+    "苏联",
+    "德国",
+    "日本",
+    "俄国",
+    "俄罗斯",
+    "秦始皇",
+    "汉武帝",
+    "唐太宗",
+    "成吉思汗",
+    "忽必烈",
+    "朱元璋",
+    "康熙",
+    "乾隆",
+    "凯撒",
+    "亚历山大",
+    "拿破仑",
+    "华盛顿",
+    "孔子",
+    "诸葛亮",
+    "郑和"
+  ]
+}
