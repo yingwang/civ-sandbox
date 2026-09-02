@@ -353,22 +353,64 @@ class LedgerEngine:
             "neighbours": neighbours,
         }
 
+    def proposal_schema_text(self) -> str:
+        """The JSON shape one region's council must answer with (the research menu variant)."""
+        return (
+            '{"polities": {"<政权名>": {'
+            '"research": [{"name": "<新知识的描述性名称>", "kind": "observation|principle|technique", '
+            '"from": ["<所依赖的已有知识名>", "..."], "effect": "capacity|military|trade|literacy|research|health|navigation"}], '
+            '"reform": {"name": "<制度名>", "target": "fiscal|cohesion|legitimacy|military"} 或 null, '
+            '"war": {"target": "<邻近政权名>", "aim": "<目的>"} 或 null, '
+            '"build": "irrigation|roads|ports|walls|none"}}}'
+        )
+
+    def proposal_rules_text(self) -> str:
+        return (
+            "规则：研究只能从 knowledge 列表里已有的知识长出来，from 必须写已有的名字，写不出依赖就不要提；"
+            "每个政权最多三项研究；知识名要按它解决的问题和用的材料来描述，不得使用真实历史上出现过的技术名、人名、地名与朝代名；"
+            "战争目标只能是本区域或相邻区域里存在的政权；不必让每个政权都开战或都研究，穷弱的政权可以只求生存。"
+        )
+
     def proposal_prompt(self, rid: str, era_label: str) -> str:
         state = self.observable_state(rid)
         return (
             f"你是【{state['region']}】各政权的决策议事会，时间是{era_label}。下面是本纪开始时你们能观察到的状态：\n"
             f"{json.dumps(state, ensure_ascii=False, indent=1)}\n\n"
             "为每个政权写出本纪的意图。只输出一个 JSON 对象，不要任何解释：\n"
-            '{"polities": {"<政权名>": {'
-            '"research": [{"name": "<新知识的描述性名称>", "kind": "observation|principle|technique", '
-            '"from": ["<所依赖的已有知识名>", "..."], "effect": "capacity|military|trade|literacy|research|health|navigation"}], '
-            '"reform": {"name": "<制度名>", "target": "fiscal|cohesion|legitimacy|military"} 或 null, '
-            '"war": {"target": "<邻近政权名>", "aim": "<目的>"} 或 null, '
-            '"build": "irrigation|roads|ports|walls|none"}}}\n\n'
-            "规则：研究只能从上面 knowledge 列表里已有的知识长出来，from 必须写已有的名字，写不出依赖就不要提；"
-            "每个政权最多三项研究；知识名要按它解决的问题和用的材料来描述，不得使用真实历史上出现过的技术名、人名、地名与朝代名；"
-            "战争目标只能是本区域或相邻区域里存在的政权；不必让每个政权都开战或都研究，穷弱的政权可以只求生存。"
+            f"{self.proposal_schema_text()}\n\n{self.proposal_rules_text()}"
         )
+
+    def world_proposal_prompt(self, rids: Sequence[str], era_label: str) -> str:
+        """One prompt for every region at once.
+
+        A run used to make one model call per region per era, ten per era with the
+        chronicle, 230 for the whole history; twice in one day the provider's quota ran
+        out at era 13. Each region's council still sees only its own observable state and
+        answers for itself, but all nine answers come back in one reply, so an era costs
+        two calls and the whole history fits comfortably inside one quota window.
+        """
+        states = {rid: self.observable_state(rid) for rid in rids}
+        return (
+            f"时间是{era_label}。下面是本纪开始时各区域议事会各自能观察到的状态，键是区域代号：\n"
+            f"{json.dumps(states, ensure_ascii=False, indent=1)}\n\n"
+            "你要依次扮演每一个区域各政权的决策议事会，只根据该区域自己的状态与邻区情报替它们写本纪意图；"
+            "各区域互不知道对方议事会的决定。只输出一个 JSON 对象，不要任何解释，形状是 "
+            '{"regions": {"<区域代号>": ' + self.proposal_schema_text() + "}}。\n"
+            "每个区域的键必须与上面的区域代号完全一致。\n\n" + self.proposal_rules_text()
+        )
+
+    def _parse_world_reply(self, rids: Sequence[str], reply: str) -> Dict[str, Dict[str, Any]]:
+        parsed = extract_json(reply)
+        regions = parsed.get("regions") if isinstance(parsed, dict) else None
+        if not isinstance(regions, dict):
+            return {}
+        by_name = {self.regions[rid]["name"]: rid for rid in rids}
+        out: Dict[str, Dict[str, Any]] = {}
+        for key, value in regions.items():
+            rid = key if key in self.regions else by_name.get(str(key))
+            if rid in rids and isinstance(value, dict) and isinstance(value.get("polities"), dict):
+                out[rid] = value
+        return out
 
     def heuristic_proposal(self, rid: str) -> Dict[str, Any]:
         out: Dict[str, Any] = {"polities": {}}
@@ -394,9 +436,19 @@ class LedgerEngine:
 
     def collect_proposals(self, era: int, era_label: str) -> Dict[str, Dict[str, Any]]:
         rids = [rid for rid in self.regions if self.living(rid)]
+        proposals: Dict[str, Dict[str, Any]] = {}
+        if self.cfg.get("llm", {}).get("batch_regions", True):
+            answered = self._parse_world_reply(rids, self.llm.ask(self.world_proposal_prompt(rids, era_label))) if self.llm.tool else {}
+            for rid in rids:
+                if rid in answered:
+                    proposals[rid] = answered[rid]
+                    self.stats["llm_proposals"] += 1
+                else:
+                    proposals[rid] = self.heuristic_proposal(rid)
+                    self.stats["heuristic_proposals"] += 1
+            return proposals
         prompts = [self.proposal_prompt(rid, era_label) for rid in rids]
         replies = self.llm.ask_many(prompts)
-        proposals: Dict[str, Dict[str, Any]] = {}
         for rid, reply in zip(rids, replies):
             parsed = extract_json(reply)
             if parsed and isinstance(parsed.get("polities"), dict):
@@ -407,22 +459,41 @@ class LedgerEngine:
                 self.stats["heuristic_proposals"] += 1
         return proposals
 
+    # A one-character overlap used to count as a match, which made "the prerequisite must
+    # be on the books" and "the war target must exist" nearly meaningless.
+    MIN_PARTIAL_MATCH = 3
+
     def find_node_by_name(self, rid: str, name: str) -> Optional[Node]:
         name = name.strip()
-        for nid in sorted(self.regions[rid]["knowledge"]):
-            node = self.nodes.get(nid)
-            if node and (node.name == name or name in node.name or node.name in name):
+        if not name:
+            return None
+        known = [self.nodes[nid] for nid in sorted(self.regions[rid]["knowledge"]) if nid in self.nodes]
+        for node in known:
+            if node.name == name:
                 return node
+        partial = [
+            node for node in known
+            if min(len(name), len(node.name)) >= self.MIN_PARTIAL_MATCH
+            and (name in node.name or node.name in name)
+        ]
+        if len(partial) == 1:
+            return partial[0]
         return None
 
     def find_polity(self, name: str) -> Optional[Polity]:
         name = (name or "").strip()
+        if not name:
+            return None
         for p in self.living():
             if p.name == name:
                 return p
-        for p in self.living():
-            if name and (name in p.name or p.name in name):
-                return p
+        partial = [
+            p for p in self.living()
+            if min(len(name), len(p.name)) >= self.MIN_PARTIAL_MATCH - 1
+            and (name in p.name or p.name in name)
+        ]
+        if len(partial) == 1:
+            return partial[0]
         return None
 
     def resolve(self, era: int, proposals: Dict[str, Dict[str, Any]]) -> None:
@@ -676,10 +747,13 @@ class LedgerEngine:
                         ocfg["contacts"].add(rid)
                         region["links"].add(other)
                         ocfg["links"].add(rid)
+                        self.log(era, "contact", rid, f"{region['name']}的远洋船队抵达{ocfg['name']}，两地首次接触，病原与技术开始双向交换", other=other)
+                        # Setting the plague flag here did nothing: the toll is taken in
+                        # the harvest step, which has already run, and the next era's
+                        # exogenous roll overwrote the flag. Settle the exchange now.
                         for side in (rid, other):
                             if self.rng.random() < 0.6:
-                                self.regions[side]["plague"] = True
-                        self.log(era, "contact", rid, f"{region['name']}的远洋船队抵达{ocfg['name']}，两地首次接触，病原与技术开始双向交换", other=other)
+                                self.contact_epidemic(era, side)
         # diffusion along links, only where prerequisites already exist
         for rid, region in self.regions.items():
             for other in sorted(region["links"]):
@@ -692,6 +766,19 @@ class LedgerEngine:
                     if self.rng.random() < prob:
                         target["knowledge"].add(nid)
                         self.log(era, "diffusion", other, f"「{node.name}」自{region['name']}传入{target['name']}", node=nid, source=rid)
+
+    def contact_epidemic(self, era: int, rid: str) -> None:
+        """A pathogen carried by first ocean contact: a virgin-soil epidemic, settled at once."""
+        lo, hi = self.rates["epidemic_mortality"]
+        region = self.regions[rid]
+        mortality = min(hi * 1.5, hi + (hi - lo) * 0.5)  # no acquired resistance at all
+        for p in self.living(rid):
+            dead = p.population * mortality
+            p.population = max(0.02, p.population - dead)
+            p.fiscal = clamp(p.fiscal - 0.05)
+            p.cohesion = clamp(p.cohesion - 0.05)
+            self.log(era, "plague_toll", rid, f"远洋接触带来的疫病在{p.name}蔓延，疫死约{dead:.1f}百万", polity=p.id, source="contact")
+        region["plague"] = True
 
     # ------------------------------------------------------------ narration
     def era_summary(self, era: int) -> Dict[str, Any]:
@@ -762,9 +849,14 @@ class LedgerEngine:
         old = p.name
         p.name = name
         p.needs_name = False
+        # The placeholder appears in ledger text either as the polity id ("p12") or as
+        # its provisional name ("@新政权12"). A plain replace of "p1" also rewrote the
+        # "p1" inside "p12" and "p120"; match on boundaries instead.
+        pattern = re.compile(rf"(?<![A-Za-z0-9]){re.escape(p.id)}(?![0-9])|{re.escape(old)}(?![0-9])")
         for entry in self.ledger:
-            if entry.get("text") and p.id in entry["text"]:
-                entry["text"] = entry["text"].replace(p.id, name)
+            text = entry.get("text")
+            if text and (p.id in text or old in text):
+                entry["text"] = pattern.sub(name, text)
         for q in self.polities:
             q.lineage = [name if item == old else item for item in q.lineage]
 
@@ -812,6 +904,7 @@ class LedgerEngine:
         version, internal, gauss_next = self.rng.getstate()
         payload = {
             "seed": self.seed,
+            "engine": type(self).__name__,
             "eras_done": eras_done,
             "rng": {"version": version, "internal": list(internal), "gauss_next": gauss_next},
             "regions": {
@@ -837,6 +930,14 @@ class LedgerEngine:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
         if payload["seed"] != self.seed:
             raise ValueError(f"checkpoint seed {payload['seed']} differs from engine seed {self.seed}")
+        written_by = payload.get("engine")
+        if written_by and written_by != type(self).__name__:
+            # Two engines, two rule sets: continuing one run under the other would splice
+            # histories that were never the same simulation.
+            raise ValueError(
+                f"checkpoint was written by {written_by}, not {type(self).__name__}; "
+                "start a fresh run (or move the checkpoint aside) instead of resuming"
+            )
         rng = payload["rng"]
         self.rng.setstate((rng["version"], tuple(rng["internal"]), rng["gauss_next"]))
         for rid, saved in payload["regions"].items():

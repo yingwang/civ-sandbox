@@ -11,7 +11,6 @@ The finite macro state is therefore an accounting boundary, not a technology cat
 
 from __future__ import annotations
 
-import json
 from typing import Any, Dict, List, Tuple
 
 from ledger_engine import EFFECT_BONUS_KEY, LedgerEngine, Node, Polity, clamp
@@ -61,12 +60,8 @@ class OpenKnowledgeLedgerEngine(LedgerEngine):
         }
         return state
 
-    def proposal_prompt(self, rid: str, era_label: str) -> str:
-        state = self.observable_state(rid)
+    def proposal_schema_text(self) -> str:
         return (
-            f"你是【{state['region']}】各政权的决策议事会，时间是{era_label}。下面是本纪开始时真正可观察的状态：\n"
-            f"{json.dumps(state, ensure_ascii=False, indent=1)}\n\n"
-            "为每个政权提出本纪意图。只输出一个 JSON 对象，不要解释：\n"
             '{"polities": {"<政权名>": {'
             '"research": [{'
             '"name": "<给这种新知识起一个描述性名字>", '
@@ -78,7 +73,11 @@ class OpenKnowledgeLedgerEngine(LedgerEngine):
             '"expected_consequences": ["<自由语言描述可能产生的直接后果>", "..."]}], '
             '"reform": {"name": "<制度名>", "target": "fiscal|cohesion|legitimacy|military"} 或 null, '
             '"war": {"target": "<邻近政权名>", "aim": "<目的>"} 或 null, '
-            '"build": "irrigation|roads|ports|walls|none"}}}\n\n'
+            '"build": "irrigation|roads|ports|walls|none"}}}'
+        )
+
+    def proposal_rules_text(self) -> str:
+        return (
             "研究规则：不要从任何预设科技树挑下一项，也不要因为年代和地区去补全你知道的真实历史。"
             "真实历史只可作为物理与社会常识，不能作为候选答案表。先看当前状态里的压力、机会、地理和已有知识，再从第一性原理提出办法。"
             "可以出现现实历史从未采用的材料组合、组织办法、信息体系或技术路线；不同地区面对同一问题可以得到完全不同的解。"

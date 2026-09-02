@@ -69,7 +69,7 @@ class LedgerEngineTests(unittest.TestCase):
 
             def ask(self, prompt):
                 self.calls += 1
-                if self.calls > 12:
+                if self.calls > 3:
                     self.exhausted = True
                     raise QuotaExhausted("Individual quota reached")
                 return ""
@@ -84,7 +84,7 @@ class LedgerEngineTests(unittest.TestCase):
             doc = engine.run(epochs=8, output_path=out)
             self.assertTrue(engine.paused)
             checkpoint = json.loads(engine.checkpoint_path(out).read_text(encoding="utf-8"))
-            # one era of nine proposal calls plus one chronicle call fits in the 12-call budget; the second era trips it
+            # an era is one batched proposal call plus one chronicle call: era 1 fits in the 3-call budget, era 2 trips it
             self.assertEqual(checkpoint["eras_done"], 1)
             self.assertEqual(doc.count("\n## 【"), 1)
             self.assertEqual(max(e["era"] for e in engine.ledger), 1)
@@ -97,3 +97,53 @@ class LedgerEngineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class LedgerReviewFixesTests(unittest.TestCase):
+    def setUp(self):
+        from ledger_engine import LedgerEngine
+        self.engine = LedgerEngine(seed=3, llm_enabled=False, live_print=False)
+
+    def test_world_reply_is_split_per_region_by_id_or_name(self):
+        rids = ["huabei", "jianghuai"]
+        reply = '{"regions": {"huabei": {"polities": {"a": {}}}, "长江流域": {"polities": {"b": {}}}, "nowhere": {"polities": {}}}}'
+        parsed = self.engine._parse_world_reply(rids, reply)
+        self.assertEqual(set(parsed), {"huabei", "jianghuai"})
+        prompt = self.engine.world_proposal_prompt(rids, "第一纪")
+        self.assertIn('"regions"', prompt)
+        self.assertIn("huabei", prompt)
+
+    def test_contact_epidemic_takes_its_toll_immediately(self):
+        before = sum(p.population for p in self.engine.living("huabei"))
+        self.engine.contact_epidemic(1, "huabei")
+        after = sum(p.population for p in self.engine.living("huabei"))
+        self.assertLess(after, before)
+        self.assertEqual(self.engine.ledger[-1]["type"], "plague_toll")
+
+    def test_rename_does_not_touch_ids_that_share_a_prefix(self):
+        from ledger_engine import Polity
+        self.engine._polity_counter = 11
+        p1 = self.engine.polities[0]
+        p1.needs_name = True
+        p1.name = "@新政权1"
+        self.engine.log(1, "note", "huabei", "p1 与 p12 同纪并起，@新政权1 未定")
+        self.engine.rename(p1, "沣渭国")
+        self.assertEqual(self.engine.ledger[-1]["text"], "沣渭国 与 p12 同纪并起，沣渭国 未定")
+
+    def test_short_overlaps_no_longer_match(self):
+        self.assertIsNone(self.engine.find_node_by_name("huabei", "水"))
+        self.assertIsNone(self.engine.find_polity("国"))
+        first = self.engine.living("huabei")[0]
+        self.assertIs(self.engine.find_polity(first.name), first)
+
+    def test_checkpoint_refuses_another_engine(self):
+        import tempfile, pathlib
+        from open_ledger_engine import OpenKnowledgeLedgerEngine
+        with tempfile.TemporaryDirectory() as d:
+            path = pathlib.Path(d) / "x.checkpoint.json"
+            self.engine.save_checkpoint(path, 2)
+            other = OpenKnowledgeLedgerEngine(seed=3, llm_enabled=False, live_print=False)
+            with self.assertRaises(ValueError):
+                other.load_checkpoint(path)
+            self.assertEqual(self.engine.load_checkpoint(path), 2)
