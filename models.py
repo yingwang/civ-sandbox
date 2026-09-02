@@ -216,6 +216,10 @@ class EpochRecord:
     plans: List[OpenPlan]
     resolutions: List[Resolution]
     chronicle_text: str
+    calendar_label: str = ""
+    span_years: int = 1
+    period_start_year: Optional[int] = None
+    period_end_year: Optional[int] = None
 
     @property
     def actions(self) -> List[OpenPlan]:

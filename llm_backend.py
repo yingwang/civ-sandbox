@@ -88,6 +88,7 @@ class LLMBackend:
         rng: random.Random,
         scenario_context: str,
         calendar_label: str,
+        span_years: int,
     ) -> OpenPlan:
         if self.mode == "cli" and self.cli_tool:
             prompt = self._plan_prompt(
@@ -101,6 +102,7 @@ class LLMBackend:
                 recent_history,
                 scenario_context,
                 calendar_label,
+                span_years,
             )
             parsed = self._parse_plan(self._query_cli(prompt), actor.id)
             if parsed:
@@ -126,6 +128,7 @@ class LLMBackend:
         rng: random.Random,
         scenario_context: str,
         calendar_label: str,
+        span_years: int,
     ) -> Optional[OpenEvent]:
         if rng.random() > 0.72:
             return None
@@ -137,6 +140,7 @@ class LLMBackend:
                 recent_history,
                 scenario_context,
                 calendar_label,
+                span_years,
             )
             parsed = self._parse_event(self._query_cli(prompt))
             if parsed:
@@ -154,6 +158,7 @@ class LLMBackend:
         societies: Dict[str, Society],
         scenario_context: str,
         calendar_label: str,
+        span_years: int,
     ) -> str:
         if self.mode == "cli" and self.cli_tool:
             prompt = self._chronicle_prompt(
@@ -164,6 +169,7 @@ class LLMBackend:
                 societies,
                 scenario_context,
                 calendar_label,
+                span_years,
             )
             text = self._query_cli(prompt)
             if text:
@@ -723,10 +729,12 @@ class LLMBackend:
         recent_history: Sequence[str],
         scenario_context: str,
         calendar_label: str,
+        span_years: int,
     ) -> str:
         state = {
             "epoch": epoch,
             "calendar": calendar_label,
+            "span_years": span_years,
             "scenario": scenario_context,
             "actor": public_dict(actor),
             "location": public_dict(location),
@@ -741,6 +749,8 @@ class LLMBackend:
             "背景资料只规定开局，不规定未来；不得因为熟悉真实历史而照抄或强行纠正为真实结果。"
             "把 actor.traits 视为长期性格，把其地点、库存、知识和组织视为自身处境。"
             "你的选择应延续自身经历与立场，不要为了与其他社会显得不同而随机表演，也不要替其他社会统筹。"
+            f"本轮覆盖{calendar_label}，共{span_years}年。提出这段时期最重要的一项长期计划，"
+            "不要把跨度较长误解为计划可以无视物资、工期或知识前置条件。"
             "根据状态提出一个中文计划。标题、目标与理由须使用这个时代的人能够理解的常用词，"
             "在人类历史场景中写粮食、水利、道路、城防、官署、百姓、使者等，不写抽象科幻术语。"
             "不要套用现实科技树，也不要宣称结果已经成功。步骤使用物理 DSL："
@@ -772,10 +782,12 @@ class LLMBackend:
         societies: Dict[str, Society],
         scenario_context: str,
         calendar_label: str,
+        span_years: int,
     ) -> str:
         facts = {
             "epoch": epoch,
             "calendar": calendar_label,
+            "span_years": span_years,
             "scenario": scenario_context,
             "events": [public_dict(item) for item in events],
             "plans": [public_dict(item) for item in plans],
@@ -785,7 +797,13 @@ class LLMBackend:
         return (
             "你是一位面向普通读者写作的中国史家。请把以下已经裁定的事实写成通俗历史正文。"
             f"第一行必须用【{calendar_label}：简短纪名】作标题，其后写三至五段连贯叙事。"
-            "先交代环境变化，再叙述各社会为何行动、行动如何受阻或完成，最后写本纪留下的局势。"
+            + (
+                f"这一期横跨{span_years}年，正文应使用“这一时期”“此后数十年”等时间说法，"
+                "不得把整段误写成一年。"
+                if span_years > 1
+                else "这一期是一年，可以按年度纪事书写。"
+            )
+            + "先交代环境变化，再叙述各社会为何行动、行动如何受阻或完成，最后写本纪留下的局势。"
             "文风接近清楚的中学历史课本与通俗历史读物。每句话只说一两件事，少用长句，"
             "难词能换成常用词就换，不卖弄文言，不堆砌地理、水文或制度术语。"
             "在人类中国场景中，只写国家、朝廷、官员、军队、百姓、粮食、河流、道路、城邑等自然说法。"
@@ -805,10 +823,12 @@ class LLMBackend:
         recent_history: Sequence[str],
         scenario_context: str,
         calendar_label: str,
+        span_years: int,
     ) -> str:
         state = {
             "epoch": epoch,
             "calendar": calendar_label,
+            "span_years": span_years,
             "scenario": scenario_context,
             "locations": {key: public_dict(value) for key, value in locations.items()},
             "resources": {key: public_dict(value) for key, value in resource_specs.items()},
@@ -820,7 +840,12 @@ class LLMBackend:
             "causes, duration, location_resource_deltas, location_property_deltas, external_inputs, "
             "external_outputs。资源变化必须满足质量守恒，跨模拟边界的物质必须显式记入 input 或 output。"
             "不要从灾害清单选择，也不要为了贴合真实历史而强行制造已知事件。"
-            "在人类历史场景中，name、description 与 causes 必须使用旱情、降雨、河水、山洪、寒潮、"
+            + (
+                "本轮跨越多年，事件应代表这一时期最重要且可由状态支持的环境过程，duration 必须为 1。"
+                if span_years > 1
+                else "本轮为一年，duration 可以按实际过程填写。"
+            )
+            + "在人类历史场景中，name、description 与 causes 必须使用旱情、降雨、河水、山洪、寒潮、"
             "粮食歉收等普通读者能懂的说法，不写抽象物理术语；内部字段仍使用给定 id。世界状态：\n"
             + json.dumps(state, ensure_ascii=False, sort_keys=True)
         )

@@ -1,5 +1,7 @@
 """Simulation orchestration for open-ended artificial history."""
 
+from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 import random
 from dataclasses import asdict
@@ -20,6 +22,7 @@ from models import (
 )
 from plan_compiler import PlanCompileError, PlanCompiler
 from scenarios import ScenarioState, build_scenario
+from timeline import advance_year
 from world_engine import WorldEngine
 
 class SimulationEngine:
@@ -31,12 +34,17 @@ class SimulationEngine:
         planner_mode: str = "cli",
         backend: Optional[LLMBackend] = None,
         scenario: str = "warring-states",
+        agent_workers: int = 1,
     ):
         self.seed = 0 if seed is None else seed
         self.rng = random.Random(self.seed)
         self.backend = backend or LLMBackend(planner_mode)
+        self.agent_workers = max(1, int(agent_workers))
         self.scenario_name = scenario
         self.scenario: Optional[ScenarioState] = None
+        self.current_year: Optional[int] = None
+        self.active_calendar_label = ""
+        self.active_span_years = 1
         self.plan_compiler = PlanCompiler()
         self.event_compiler = EventCompiler()
         self.epoch = 0
@@ -56,6 +64,7 @@ class SimulationEngine:
         self.locations = self.scenario.locations
         self.societies = self.scenario.societies
         self.knowledge_graph = self.scenario.knowledge_graph
+        self.current_year = self.scenario.start_year
         self.world = WorldEngine(
             self.rng,
             self.resource_specs,
@@ -65,10 +74,19 @@ class SimulationEngine:
         )
         return self.locations, self.societies
 
-    def step(self) -> EpochRecord:
+    def step(self, span_years: int = 1) -> EpochRecord:
         if not self.world:
             raise RuntimeError("call genesis() before step()")
+        if not isinstance(span_years, int) or span_years < 1:
+            raise ValueError("span_years must be a positive integer")
         self.epoch += 1
+        self.active_span_years = span_years
+        if self.scenario and self.current_year is not None:
+            self.active_calendar_label = self.scenario.period_label(
+                self.current_year, span_years
+            )
+        else:
+            self.active_calendar_label = f"第{self.epoch}纪"
         recent = [line for record in self.history[-3:] for line in record.chronicle_text.splitlines()]
         events: List[OpenEvent] = []
         plans: List[OpenPlan] = []
@@ -82,6 +100,7 @@ class SimulationEngine:
             self.rng,
             self._scenario_context(),
             self.calendar_label(),
+            span_years,
         )
         if event:
             events.append(event)
@@ -98,22 +117,13 @@ class SimulationEngine:
             for project in self.world.projects.values()
             if project.status in {"queued", "active"}
         }
-        for actor in sorted(self.societies.values(), key=lambda item: item.id):
-            if not actor.is_alive or actor.id in busy:
-                continue
-            plan = self.backend.propose_plan(
-                actor,
-                self.locations[actor.location_id],
-                self.resource_specs,
-                self.societies,
-                self.knowledge_graph,
-                self.world.structures,
-                self.epoch,
-                recent,
-                self.rng,
-                self._scenario_context(),
-                self.calendar_label(),
-            )
+        actors = [
+            actor
+            for actor in sorted(self.societies.values(), key=lambda item: item.id)
+            if actor.is_alive and actor.id not in busy
+        ]
+        proposed = self._propose_plans(actors, recent, span_years)
+        for actor, plan in proposed:
             plans.append(plan)
             try:
                 compiled = self.plan_compiler.compile(plan, self.epoch)
@@ -125,6 +135,12 @@ class SimulationEngine:
 
         resolutions.extend(self.world.advance(self.epoch))
         readable = [self._resolution_line(item) for item in resolutions]
+        period_start_year = self.current_year
+        period_end_year = (
+            advance_year(self.current_year, span_years - 1)
+            if self.current_year is not None
+            else None
+        )
         record = EpochRecord(
             self.epoch,
             events,
@@ -138,9 +154,16 @@ class SimulationEngine:
                 self.societies,
                 self._scenario_context(),
                 self.calendar_label(),
+                span_years,
             ),
+            calendar_label=self.calendar_label(),
+            span_years=span_years,
+            period_start_year=period_start_year,
+            period_end_year=period_end_year,
         )
         self.history.append(record)
+        if self.current_year is not None:
+            self.current_year = advance_year(self.current_year, span_years)
         return record
 
     def run(self, epochs: int) -> List[EpochRecord]:
@@ -153,8 +176,12 @@ class SimulationEngine:
         return self.history
 
     def calendar_label(self) -> str:
+        if self.active_calendar_label:
+            return self.active_calendar_label
         if not self.scenario:
             return f"第{self.epoch}纪"
+        if self.current_year is not None:
+            return self.scenario.period_label(self.current_year, 1)
         return self.scenario.calendar_label(self.epoch)
 
     def _scenario_context(self) -> str:
@@ -167,6 +194,8 @@ class SimulationEngine:
             "seed": self.seed,
             "scenario": self.scenario_name,
             "epoch": self.epoch,
+            "current_year": self.current_year,
+            "active_span_years": self.active_span_years,
             "resource_specs": self.resource_specs,
             "locations": self.locations,
             "societies": self.societies,
@@ -188,6 +217,47 @@ class SimulationEngine:
         )
         locations = tuple(sorted((item.id, item.location_id, item.is_alive) for item in self.societies.values()))
         return knowledge, structures, organizations, locations
+
+    def _propose_plans(
+        self, actors: List[Society], recent: List[str], span_years: int
+    ) -> List[Tuple[Society, OpenPlan]]:
+        if not actors:
+            return []
+
+        def propose(actor: Society) -> Tuple[Society, OpenPlan]:
+            seed_text = f"{self.seed}|{self.epoch}|{actor.id}|plan"
+            local_seed = int(
+                hashlib.sha256(seed_text.encode("utf-8")).hexdigest()[:16], 16
+            )
+            plan = self.backend.propose_plan(
+                actor,
+                self.locations[actor.location_id],
+                self.resource_specs,
+                self.societies,
+                self.knowledge_graph,
+                self.world.structures,
+                self.epoch,
+                recent,
+                random.Random(local_seed),
+                self._scenario_context(),
+                self.calendar_label(),
+                span_years,
+            )
+            return actor, plan
+
+        use_parallel = (
+            self.agent_workers > 1
+            and self.backend.mode == "cli"
+            and len(actors) > 1
+        )
+        if not use_parallel:
+            return [propose(actor) for actor in actors]
+        with ThreadPoolExecutor(
+            max_workers=min(self.agent_workers, len(actors)),
+            thread_name_prefix="society-agent",
+        ) as executor:
+            results = list(executor.map(propose, actors))
+        return sorted(results, key=lambda item: item[0].id)
 
     def _resolution_line(self, resolution: Resolution) -> str:
         if resolution.actor_id == "world":

@@ -14,6 +14,7 @@ from models import (
     Route,
     Society,
 )
+from timeline import advance_year, format_period, format_year
 
 
 @dataclass
@@ -29,11 +30,19 @@ class ScenarioState:
     knowledge_graph: KnowledgeGraph
     start_year_bce: Optional[int] = None
 
+    @property
+    def start_year(self) -> Optional[int]:
+        return -self.start_year_bce if self.start_year_bce is not None else None
+
     def calendar_label(self, epoch: int) -> str:
         if self.start_year_bce is not None:
-            elapsed_years = max(0, epoch - 1)
-            return f"公元前{self.start_year_bce - elapsed_years}年"
+            year = advance_year(-self.start_year_bce, max(0, epoch - 1))
+            return format_year(year)
         return f"第{epoch}纪"
+
+    def period_label(self, start_year: int, span_years: int) -> str:
+        end_year = advance_year(start_year, span_years - 1)
+        return format_period(start_year, end_year)
 
 
 def build_scenario(name: str, rng: random.Random) -> ScenarioState:
