@@ -1,7 +1,8 @@
 """Chinese CLI for the open-ended artificial-history simulator.
 
-Defaults to the Open-World Physics & Economics-Driven Civilization Mode (开放世界·客观规律分叉推演),
-with options for real-history narrative and classic primitive-based simulation.
+Defaults to the ledger mode with open-ended knowledge proposals and deterministic
+settlement, with options for open-world narrative, real-history narrative and the
+classic primitive-based simulation.
 """
 
 import argparse
@@ -107,13 +108,13 @@ def main() -> None:
         nargs="?",
         type=int,
         default=None,
-        help="推演纪数 (开放世界模式默认 16 纪，覆盖前230至2026年)",
+        help="推演纪数 (账本模式默认跑全部 23 纪，覆盖前230至2026年)",
     )
     parser.add_argument(
         "--mode",
         choices=("ledger", "open-world", "real-history", "classic"),
         default="ledger",
-        help="推演模式：默认 ledger (规则与随机数结算、模型只提案与记述的账本引擎)，open-world (单次调用的开放提示词模式)，real-history (真实历史全景)，classic (离线规则沙盘)",
+        help="推演模式：默认 ledger (开放知识提案 + 规则与随机数结算)，open-world (单次调用的开放提示词模式)，real-history (真实历史全景)，classic (离线规则沙盘)",
     )
     parser.add_argument("--seed", type=int, default=42, help="确定性随机种子")
     parser.add_argument("--no-llm", action="store_true", help="账本模式下不调用模型，只用离线启发式提案与模板纪事（用于测试与校准）")
@@ -142,13 +143,13 @@ def main() -> None:
         args.mode = "classic"
 
     if args.mode == "ledger":
-        from ledger_engine import LedgerEngine
+        from open_ledger_engine import OpenKnowledgeLedgerEngine
         out_path = args.output or Path(".artifacts/china-ledger-history-2026.md")
         print("=" * 75)
-        print("【Civ-Sandbox · 账本模式】规则与骰子结算气候、疫病、收成、战争与政权存亡；模型只替各区域提案，并据账本记述。")
+        print("【Civ-Sandbox · 开放知识账本模式】研究由模型从问题、假说、实验与机制自由提出；规则与骰子只结算可行性、宏观后果、战争与政权存亡。")
         print(f"推演纪数：{args.epochs or '全部'}，随机种子：{args.seed}，速率见 ledger_config.json")
         print("=" * 75)
-        engine = LedgerEngine(seed=args.seed, llm_enabled=not args.no_llm)
+        engine = OpenKnowledgeLedgerEngine(seed=args.seed, llm_enabled=not args.no_llm)
         engine.run(epochs=args.epochs, output_path=out_path, resume=args.resume)
         if getattr(engine, "paused", False):
             sys.exit(2)
