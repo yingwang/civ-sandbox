@@ -118,8 +118,11 @@ class OpenLawHistoryEngine:
         existing_epochs = {}
         if existing_text:
             for idx, (era_label, era_theme, start_yr, end_yr) in enumerate(self.DEFAULT_TIMELINE, 1):
-                marker = f"【{era_label}："
-                if marker in existing_text:
+                marker_start = f"<!-- EPOCH_{idx}_START -->"
+                # Check comment marker or year range pattern
+                if marker_start in existing_text:
+                    existing_epochs[idx] = True
+                elif (f"{start_yr}" in existing_text and f"{end_yr}" in existing_text) or (f"纪元{idx}" in existing_text) or (idx == 1 and "前230" in existing_text) or (idx == 2 and "前179" in existing_text) or (idx == 3 and "前99" in existing_text):
                     existing_epochs[idx] = True
 
         llm_count = 0
@@ -127,16 +130,27 @@ class OpenLawHistoryEngine:
 
         for idx, (era_label, era_theme, start_yr, end_yr) in enumerate(selected_epochs, 1):
             if idx in existing_epochs:
-                parts = existing_text.split(f"【{era_label}：")
-                if len(parts) > 1:
-                    section_content = parts[1].split("\n## ")[0].strip()
-                    chronicle = f"【{era_label}：{section_content}"
-                    all_chronicles.append(f"\n## {chronicle}\n")
-                    self._update_state_heuristic(state, idx)
-                    llm_count += 1
-                    if live_print:
-                        print(f"【推演纪元 {idx}/{total_epochs}】{era_label} (已从检查点恢复)", flush=True)
-                    continue
+                # If we don't have comment markers, parse by era
+                chronicle_content = ""
+                marker_start = f"<!-- EPOCH_{idx}_START -->"
+                marker_end = f"<!-- EPOCH_{idx}_END -->"
+                if marker_start in existing_text and marker_end in existing_text:
+                    chronicle_content = existing_text.split(marker_start)[1].split(marker_end)[0].strip()
+                    all_chronicles.append(f"\n<!-- EPOCH_{idx}_START -->\n{chronicle_content}\n<!-- EPOCH_{idx}_END -->\n")
+                else:
+                    # Find section in raw text
+                    sections = existing_text.split("## ")
+                    for s in sections:
+                        if (f"{start_yr}" in s and f"{end_yr}" in s) or f"纪元{idx}" in s or (idx == 1 and "前230" in s) or (idx == 2 and "前179" in s) or (idx == 3 and "前99" in s):
+                            chronicle_content = s.strip()
+                            all_chronicles.append(f"\n<!-- EPOCH_{idx}_START -->\n## {chronicle_content}\n<!-- EPOCH_{idx}_END -->\n")
+                            break
+
+                self._update_state_heuristic(state, idx)
+                llm_count += 1
+                if live_print:
+                    print(f"【推演纪元 {idx}/{total_epochs}】{era_label} (已从检查点恢复)", flush=True)
+                continue
 
             if live_print:
                 print(f"\n【开放世界推演 · 第 {idx}/{total_epochs} 纪】{era_label} ({start_yr}—{end_yr})", flush=True)
@@ -153,7 +167,7 @@ class OpenLawHistoryEngine:
             if live_print:
                 print(f"{chronicle}\n", flush=True)
 
-            all_chronicles.append(f"\n## {chronicle}\n")
+            all_chronicles.append(f"\n<!-- EPOCH_{idx}_START -->\n## {chronicle}\n<!-- EPOCH_{idx}_END -->\n")
             state = new_state
             out_file.write_text("\n".join(all_chronicles), encoding="utf-8")
 
@@ -274,5 +288,5 @@ class OpenLawHistoryEngine:
 
 if __name__ == "__main__":
     engine = OpenLawHistoryEngine(seed=2026)
-    res = engine.run(epochs=3)
-    print("Open Law History Result Preview length:", len(res))
+    res = engine.run(epochs=None)
+    print("Open Law History Result Total Length:", len(res))
