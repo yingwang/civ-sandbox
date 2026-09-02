@@ -159,9 +159,9 @@ def main() -> None:
     parser.add_argument("--agent-workers", type=int, default=3)
     parser.add_argument(
         "--planner-mode",
-        choices=["heuristic", "cli"],
-        default="heuristic",
-        help="规划器后端模式 (heuristic: 离线快速推演; cli: 订阅大模型推演)",
+        choices=["cli", "heuristic"],
+        default="cli",
+        help="规划器后端模式 (cli: 释放大模型无限可能推演; heuristic: 离线快速回退)",
     )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
