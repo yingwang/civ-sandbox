@@ -106,10 +106,29 @@ class UnboundedLLMHistoryEngine:
 
         out_file = Path(output_path) if output_path else Path(".artifacts/china-unbounded-history-2026.md")
         out_file.parent.mkdir(parents=True, exist_ok=True)
-        # Write initial header so file exists immediately
-        out_file.write_text("\n".join(all_chronicles), encoding="utf-8")
+
+        existing_text = out_file.read_text(encoding="utf-8") if out_file.exists() else ""
+        existing_epochs = {}
+        if existing_text:
+            for idx, (era_label, era_theme, start_yr, end_yr) in enumerate(self.EPOCHS, 1):
+                marker = f"【{era_label}："
+                if marker in existing_text:
+                    existing_epochs[idx] = True
 
         for idx, (era_label, era_theme, start_yr, end_yr) in enumerate(selected_epochs, 1):
+            if idx in existing_epochs:
+                # Extract existing section from existing text
+                parts = existing_text.split(f"【{era_label}：")
+                if len(parts) > 1:
+                    section_content = parts[1].split("\n## ")[0].strip()
+                    chronicle = f"【{era_label}：{section_content}"
+                    all_chronicles.append(f"\n## {chronicle}\n")
+                    self._update_state(state, idx)
+                    llm_count += 1
+                    if live_print:
+                        print(f"【推演纪元 {idx}/{total_epochs}】{era_label} (已从检查点恢复)", flush=True)
+                    continue
+
             if live_print:
                 print(f"\n【推演纪元 {idx}/{total_epochs}】{era_label} —— {era_theme}", flush=True)
 
