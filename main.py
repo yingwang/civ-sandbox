@@ -1,7 +1,7 @@
 """Chinese CLI for the open-ended artificial-history simulator.
 
-Defaults to the Unbounded LLM Mode (彻底释放大模型可能性，无硬编码枚举约束),
-with optional classic primitive-based simulation.
+Defaults to the Open-World Physics & Economics-Driven Civilization Mode (开放世界·客观规律分叉推演),
+with options for real-history narrative and classic primitive-based simulation.
 """
 
 import argparse
@@ -9,6 +9,7 @@ from pathlib import Path
 import sys
 
 from engine import SimulationEngine
+from open_law_engine import OpenLawHistoryEngine
 from unbounded_llm_history import UnboundedLLMHistoryEngine
 
 
@@ -37,13 +38,24 @@ def print_classic_state(engine: SimulationEngine) -> None:
             print(f"  {node.name}，依赖：{dependencies}，风险：{risks}")
 
 
-def run_unbounded_mode(epochs: int, seed: int, output_path: Path) -> None:
-    print("=" * 70)
-    print("【Civ-Sandbox 开放式文明模拟器 · 无约束大模型模式 (Default)】")
-    print("模式特色：彻底解除写死枚举动作与规则约束，完全由 LLM 驱动历史宏大演变")
-    print("涵盖维度：兼并决战、朝代更替、政制鼎革、科技范式跃迁（从冶铁到蒸汽算力与AI）与思想流变")
+def run_open_world_mode(epochs: int, seed: int, output_path: Path) -> None:
+    print("=" * 75)
+    print("【Civ-Sandbox 开放式文明模拟器 · 开放世界客观规律分叉模式 (Default)】")
+    print("法则核心：绝不照抄既定历史剧本，严格服从地理运力、马尔萨斯承载力、宏观经济与科技阶梯")
+    print("演变空间：七雄争霸、海上商业帝国、南方水运联邦、游牧铁骑、早期工业萌芽与现代文明")
     print(f"推演纪数：{epochs} 纪 (公元前230年 至 公元2026年)，随机种子：{seed}")
-    print("=" * 70)
+    print("=" * 75)
+
+    engine = OpenLawHistoryEngine(seed=seed)
+    engine.run(epochs=epochs, output_path=output_path, live_print=True)
+
+
+def run_real_history_mode(epochs: int, seed: int, output_path: Path) -> None:
+    print("=" * 75)
+    print("【Civ-Sandbox 开放式文明模拟器 · 真实历史编年全景模式】")
+    print("模式特色：大模型沿真实朝代更替与关键科技节点，生成两千年全景通史")
+    print(f"推演纪数：{epochs} 纪 (公元前230年 至 公元2026年)，随机种子：{seed}")
+    print("=" * 75)
 
     engine = UnboundedLLMHistoryEngine(seed=seed)
     engine.run(epochs=epochs, output_path=output_path, live_print=True)
@@ -95,20 +107,20 @@ def main() -> None:
         nargs="?",
         type=int,
         default=None,
-        help="推演纪数 (无约束大模型模式默认全景 23 纪，覆盖前230至2026年)",
+        help="推演纪数 (开放世界模式默认 16 纪，覆盖前230至2026年)",
     )
     parser.add_argument(
         "--mode",
-        choices=("unbounded", "classic"),
-        default="unbounded",
-        help="推演模式：默认 unbounded (真正释放大模型所有可能性的宏大演变)，classic 为离线规则/通用物理基元模式",
+        choices=("open-world", "real-history", "classic"),
+        default="open-world",
+        help="推演模式：默认 open-world (遵循物理与经济学规律的真正开放分叉世界)，real-history (真实历史全景)，classic (离线规则沙盘)",
     )
     parser.add_argument("--seed", type=int, default=42, help="确定性随机种子")
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path(".artifacts/china-unbounded-history-2026.md"),
-        help="输出通史文档路径",
+        default=None,
+        help="输出通史文档路径 (默认自动分配)",
     )
     parser.add_argument(
         "--scenario",
@@ -124,16 +136,19 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # If user explicitly specifies heuristic planner without specifying mode, default to classic mode
     if args.planner == "heuristic" and "--mode" not in sys.argv:
         args.mode = "classic"
 
-    epochs = args.epochs if args.epochs is not None else (23 if args.mode == "unbounded" else 8)
-
-    if args.mode == "unbounded":
-        run_unbounded_mode(epochs=epochs, seed=args.seed, output_path=args.output)
+    if args.mode == "open-world":
+        epochs = args.epochs if args.epochs is not None else 16
+        out_path = args.output or Path(".artifacts/china-open-world-history-2026.md")
+        run_open_world_mode(epochs=epochs, seed=args.seed, output_path=out_path)
+    elif args.mode == "real-history":
+        epochs = args.epochs if args.epochs is not None else 23
+        out_path = args.output or Path(".artifacts/china-unbounded-history-2026.md")
+        run_real_history_mode(epochs=epochs, seed=args.seed, output_path=out_path)
     else:
-        args.epochs = epochs
+        args.epochs = args.epochs if args.epochs is not None else 8
         run_classic_mode(args)
 
 
