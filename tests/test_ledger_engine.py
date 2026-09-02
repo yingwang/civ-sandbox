@@ -46,6 +46,49 @@ class LedgerEngineTests(unittest.TestCase):
         self.assertEqual(len(engine.nodes), before + 1)
         self.assertEqual(engine.ledger[-1]["type"], "research")
 
+    def test_checkpoint_resume_reproduces_a_straight_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "run.md"
+            straight = LedgerEngine(seed=5, llm_enabled=False, live_print=False).run(epochs=6, output_path=Path(tmp) / "straight.md")
+            first = LedgerEngine(seed=5, llm_enabled=False, live_print=False)
+            first.run(epochs=3, output_path=out)
+            self.assertTrue(first.checkpoint_path(out).is_file())
+            second = LedgerEngine(seed=5, llm_enabled=False, live_print=False)
+            resumed = second.run(epochs=6, output_path=out, resume=True)
+        self.assertEqual(resumed, straight)
+
+    def test_quota_refusal_pauses_at_the_era_boundary_with_a_checkpoint(self):
+        from ledger_engine import QuotaExhausted
+
+        class QuotaClient:
+            tool = "fake"
+            calls = 0
+            failures = 0
+            exhausted = False
+            last_error = ""
+
+            def ask(self, prompt):
+                self.calls += 1
+                if self.calls > 12:
+                    self.exhausted = True
+                    raise QuotaExhausted("Individual quota reached")
+                return ""
+
+            def ask_many(self, prompts):
+                return [self.ask(p) for p in prompts]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "run.md"
+            engine = LedgerEngine(seed=9, llm_enabled=False, live_print=False)
+            engine.llm = QuotaClient()
+            doc = engine.run(epochs=8, output_path=out)
+            self.assertTrue(engine.paused)
+            checkpoint = json.loads(engine.checkpoint_path(out).read_text(encoding="utf-8"))
+            # one era of nine proposal calls plus one chronicle call fits in the 12-call budget; the second era trips it
+            self.assertEqual(checkpoint["eras_done"], 1)
+            self.assertEqual(doc.count("\n## 【"), 1)
+            self.assertEqual(max(e["era"] for e in engine.ledger), 1)
+
     def test_extract_json_reads_fenced_and_bare_objects(self):
         self.assertEqual(extract_json('前言 ```json {"a": 1} ``` 后记')["a"], 1)
         self.assertEqual(extract_json('{"title": "x", "names": {"p3": "y"}}')["names"]["p3"], "y")

@@ -64,6 +64,12 @@ python3 main.py --no-llm
 
 产物是一份 Markdown 通史（每纪一节，末附史官论赞、知识谱系与政权谱系）和一份同名的 `.ledger.json` 账本，记录每一条事件与终局状态，可以逐条核对纪事有没有越出账本。
 
+每完成一纪，引擎把整个运行状态（含随机数状态）写到输出文件旁的 `.checkpoint.json`。模型额度用尽时（agy 返回 quota 错误）引擎在纪的边界停下并退出码 2，而不是用模板把剩下的历史糊完；额度恢复后加 `--resume` 从断点续跑，结果与一次跑完逐字相同：
+
+```bash
+python3 main.py --seed 2026 --output .artifacts/china-ledger-history-2026.md --resume
+```
+
 ## 运行
 
 以下为其余三种模式。`--mode open-world` 是单次调用的开放提示词模式，`--mode real-history` 沿真实朝代走：彻底打破任何死板动作枚举（Primitive）与规则限制，释放 LLM 的全部宏大叙事与推演潜能（包含兼并决战、朝代兴衰更替、科技范式跃迁、制度鼎革与文化思想涌现），推演公元前230年至公元2026年的全景通史：

@@ -117,6 +117,7 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=42, help="确定性随机种子")
     parser.add_argument("--no-llm", action="store_true", help="账本模式下不调用模型，只用离线启发式提案与模板纪事（用于测试与校准）")
+    parser.add_argument("--resume", action="store_true", help="账本模式下从输出文件旁的 .checkpoint.json 续跑（模型额度用尽中断后使用）")
     parser.add_argument(
         "--output",
         type=Path,
@@ -147,7 +148,10 @@ def main() -> None:
         print("【Civ-Sandbox · 账本模式】规则与骰子结算气候、疫病、收成、战争与政权存亡；模型只替各区域提案，并据账本记述。")
         print(f"推演纪数：{args.epochs or '全部'}，随机种子：{args.seed}，速率见 ledger_config.json")
         print("=" * 75)
-        LedgerEngine(seed=args.seed, llm_enabled=not args.no_llm).run(epochs=args.epochs, output_path=out_path)
+        engine = LedgerEngine(seed=args.seed, llm_enabled=not args.no_llm)
+        engine.run(epochs=args.epochs, output_path=out_path, resume=args.resume)
+        if getattr(engine, "paused", False):
+            sys.exit(2)
         return
     if args.mode == "open-world":
         epochs = args.epochs if args.epochs is not None else 16

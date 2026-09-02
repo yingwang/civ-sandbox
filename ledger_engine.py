@@ -78,8 +78,18 @@ class Polity:
     needs_name: bool = False
 
 
+class QuotaExhausted(RuntimeError):
+    """The model provider refused for lack of quota; the run should pause, not degrade."""
+
+
 class LLMClient:
-    """One call to the locally authenticated agy (or claude / codex) in print mode."""
+    """One call to the locally authenticated agy (or claude / codex) in print mode.
+
+    A transient failure is retried once. A quota refusal is different: every further call
+    would fail the same way, so the client marks itself exhausted and raises, and the engine
+    stops at the era boundary with a checkpoint instead of filling the rest of history with
+    template text.
+    """
 
     def __init__(self, cfg: Dict[str, Any], enabled: bool = True):
         self.tool = cfg.get("tool", "agy") if enabled else None
@@ -90,10 +100,21 @@ class LLMClient:
             self.tool = None
         self.calls = 0
         self.failures = 0
+        self.exhausted = False
+        self.last_error = ""
 
     def ask(self, prompt: str) -> str:
         if not self.tool:
             return ""
+        if self.exhausted:
+            raise QuotaExhausted(self.last_error)
+        text = self._ask_once(prompt)
+        if not text and not self.exhausted:
+            time.sleep(8)
+            text = self._ask_once(prompt)
+        return text
+
+    def _ask_once(self, prompt: str) -> str:
         if self.tool == "agy":
             cmd = ["agy", "--model", self.model, "--disable-slash-commands",
                    "--output-format", "json", "-p", prompt]
@@ -107,13 +128,31 @@ class LLMClient:
         except Exception:
             self.failures += 1
             return ""
-        if res.returncode != 0 or not res.stdout.strip():
+        if not res.stdout.strip():
             self.failures += 1
+            return ""
+        if res.returncode != 0:
+            self.failures += 1
+            try:
+                payload = json.loads(res.stdout.strip())
+                error = str(payload.get("error") or "")
+                if error and "quota" in error.lower():
+                    self.exhausted = True
+                    self.last_error = error
+                    raise QuotaExhausted(error)
+            except json.JSONDecodeError:
+                pass
             return ""
         text = res.stdout.strip()
         if self.tool in ("agy", "claude"):
             try:
                 payload = json.loads(text)
+                error = str(payload.get("error") or "")
+                if error and "quota" in error.lower():
+                    self.exhausted = True
+                    self.last_error = error
+                    self.failures += 1
+                    raise QuotaExhausted(error)
                 text = str(payload.get("response") or payload.get("result") or "")
             except json.JSONDecodeError:
                 pass
@@ -217,7 +256,7 @@ class LedgerEngine:
         return [p for p in self.polities if p.alive and (region is None or p.region == region)]
 
     def region_bonus(self, rid: str, key: str) -> float:
-        return sum(self.nodes[n].bonuses.get(key, 0.0) for n in self.regions[rid]["knowledge"] if n in self.nodes)
+        return sum(self.nodes[n].bonuses.get(key, 0.0) for n in sorted(self.regions[rid]["knowledge"]) if n in self.nodes)
 
     def region_capacity(self, rid: str) -> float:
         region = self.regions[rid]
@@ -279,7 +318,7 @@ class LedgerEngine:
         # plague spreads along links
         for rid, region in list(self.regions.items()):
             if region["plague"]:
-                for other in region["links"]:
+                for other in sorted(region["links"]):
                     if not self.regions[other]["plague"] and self.rng.random() < rates["epidemic_spread"]:
                         self.regions[other]["plague"] = True
                         self.log(era, "plague", other, f"疫病沿商路传入{self.regions[other]['name']}", source=rid)
@@ -333,7 +372,7 @@ class LedgerEngine:
 
     def heuristic_proposal(self, rid: str) -> Dict[str, Any]:
         out: Dict[str, Any] = {"polities": {}}
-        known = [self.nodes[n] for n in self.regions[rid]["knowledge"] if n in self.nodes]
+        known = [self.nodes[n] for n in sorted(self.regions[rid]["knowledge"]) if n in self.nodes]
         for p in self.living(rid):
             research = []
             if known and self.rng.random() < 0.7:
@@ -370,7 +409,7 @@ class LedgerEngine:
 
     def find_node_by_name(self, rid: str, name: str) -> Optional[Node]:
         name = name.strip()
-        for nid in self.regions[rid]["knowledge"]:
+        for nid in sorted(self.regions[rid]["knowledge"]):
             node = self.nodes.get(nid)
             if node and (node.name == name or name in node.name or node.name in name):
                 return node
@@ -611,7 +650,7 @@ class LedgerEngine:
             self.end_polity(era, p, "被新集团取代")
         # knowledge can be lost when the state that kept the books goes down
         if region["knowledge"] and self.rng.random() < rates["knowledge_loss_on_collapse"] * p.share:
-            candidates = [n for n in region["knowledge"] if self.nodes[n].origin != "seed"]
+            candidates = [n for n in sorted(region["knowledge"]) if self.nodes[n].origin != "seed"]
             if candidates:
                 lost = self.rng.choice(candidates)
                 region["knowledge"].discard(lost)
@@ -622,7 +661,7 @@ class LedgerEngine:
         rates = self.rates
         for rid, region in self.regions.items():
             trade = self.region_bonus(rid, "trade_bonus")
-            for other in list(region["contacts"]):
+            for other in sorted(region["contacts"]):
                 if other not in region["links"] and self.rng.random() < rates["trade_link_probability"] * (0.5 + trade * 3):
                     region["links"].add(other)
                     self.regions[other]["links"].add(rid)
@@ -643,9 +682,9 @@ class LedgerEngine:
                         self.log(era, "contact", rid, f"{region['name']}的远洋船队抵达{ocfg['name']}，两地首次接触，病原与技术开始双向交换", other=other)
         # diffusion along links, only where prerequisites already exist
         for rid, region in self.regions.items():
-            for other in region["links"]:
+            for other in sorted(region["links"]):
                 target = self.regions[other]
-                for nid in list(region["knowledge"] - target["knowledge"]):
+                for nid in sorted(region["knowledge"] - target["knowledge"]):
                     node = self.nodes.get(nid)
                     if node is None or not all(pr in target["knowledge"] for pr in node.prereqs):
                         continue
@@ -763,35 +802,118 @@ class LedgerEngine:
             lines.append(f"- {p.name}（{self.regions[p.region]['name']}，第{p.founded_era}纪起，{state}{origin}）")
         return "\n".join(lines) + "\n"
 
+    # ---------------------------------------------------------- checkpoints
+    @staticmethod
+    def checkpoint_path(output_path: Path) -> Path:
+        return output_path.with_suffix(".checkpoint.json")
+
+    def save_checkpoint(self, path: Path, eras_done: int) -> None:
+        """Everything needed to continue the same run bit-for-bit after a pause."""
+        version, internal, gauss_next = self.rng.getstate()
+        payload = {
+            "seed": self.seed,
+            "eras_done": eras_done,
+            "rng": {"version": version, "internal": list(internal), "gauss_next": gauss_next},
+            "regions": {
+                rid: {
+                    "cfg": region["cfg"], "knowledge": sorted(region["knowledge"]), "urban": region["urban"],
+                    "literacy": region["literacy"], "climate": region["climate"], "plague": region["plague"],
+                    "links": sorted(region["links"]), "contacts": sorted(region["contacts"]), "famine": region["famine"],
+                }
+                for rid, region in self.regions.items()
+            },
+            "nodes": {k: asdict(v) for k, v in self.nodes.items()},
+            "polities": [asdict(p) for p in self.polities],
+            "ledger": self.ledger,
+            "chronicle": self.chronicle,
+            "stats": self.stats,
+            "counters": {"polity": self._polity_counter, "node": self._node_counter},
+            "llm": {"calls": self.llm.calls, "failures": self.llm.failures},
+        }
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    def load_checkpoint(self, path: Path) -> int:
+        """Restore a saved run into this engine; returns how many eras were already done."""
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        if payload["seed"] != self.seed:
+            raise ValueError(f"checkpoint seed {payload['seed']} differs from engine seed {self.seed}")
+        rng = payload["rng"]
+        self.rng.setstate((rng["version"], tuple(rng["internal"]), rng["gauss_next"]))
+        for rid, saved in payload["regions"].items():
+            region = self.regions[rid]
+            region["cfg"] = saved["cfg"]
+            region["knowledge"] = set(saved["knowledge"])
+            region["links"] = set(saved["links"])
+            region["contacts"] = set(saved["contacts"])
+            for key in ("urban", "literacy", "climate", "plague", "famine"):
+                region[key] = saved[key]
+        self.nodes = {k: Node(**v) for k, v in payload["nodes"].items()}
+        self.polities = [Polity(**p) for p in payload["polities"]]
+        self.ledger = payload["ledger"]
+        self.chronicle = payload["chronicle"]
+        self.stats = payload["stats"]
+        self._polity_counter = payload["counters"]["polity"]
+        self._node_counter = payload["counters"]["node"]
+        self.llm.calls = payload["llm"]["calls"]
+        self.llm.failures = payload["llm"]["failures"]
+        return int(payload["eras_done"])
+
     # ---------------------------------------------------------------- run
-    def run(self, epochs: Optional[int] = None, output_path: Optional[Path] = None) -> str:
+    def run(self, epochs: Optional[int] = None, output_path: Optional[Path] = None, resume: bool = False) -> str:
         eras = self.eras[:epochs] if epochs else self.eras
         out = Path(output_path) if output_path else Path(".artifacts/china-ledger-history-2026.md")
         out.parent.mkdir(parents=True, exist_ok=True)
-        head = [
-            "# 《账本通史》：由规则与骰子结算、由史官记述的开放世界（前230年至2026年）",
-            "",
-            f"种子 {self.seed}。每一纪先由随机数结算气候与疫病，再由各区域议事会提出意图，由引擎依 `ledger_config.json` 中的速率结算"
-            "收成、战争、政权存亡与知识生长，最后由史官据账本记述。史官不得增删事实，模型从不决定结局。",
-            "",
-        ]
-        self.chronicle = head
+        checkpoint = self.checkpoint_path(out)
+        eras_done = 0
+        if resume and checkpoint.is_file():
+            eras_done = self.load_checkpoint(checkpoint)
+            if self.live_print:
+                print(f"从检查点续跑：前 {eras_done} 纪已完成", flush=True)
+        else:
+            self.chronicle = [
+                "# 《账本通史》：由规则与骰子结算、由史官记述的开放世界（前230年至2026年）",
+                "",
+                f"种子 {self.seed}。每一纪先由随机数结算气候与疫病，再由各区域议事会提出意图，由引擎依 `ledger_config.json` 中的速率结算"
+                "收成、战争、政权存亡与知识生长，最后由史官据账本记述。史官不得增删事实，模型从不决定结局。",
+                "",
+            ]
+        self.paused = False
         for era, (label, start, end) in enumerate(eras, 1):
+            if era <= eras_done:
+                continue
             t0 = time.time()
-            self.exogenous(era)
-            proposals = self.collect_proposals(era, label)
-            before = len(self.ledger)
-            self.resolve(era, proposals)
-            events = self.ledger[before - 0:] if before == 0 else [e for e in self.ledger if e["era"] == era]
-            section = self.narrate(era, label, events)
+            try:
+                self.exogenous(era)
+                proposals = self.collect_proposals(era, label)
+                before = len(self.ledger)
+                self.resolve(era, proposals)
+                events = [e for e in self.ledger if e["era"] == era]
+                section = self.narrate(era, label, events)
+            except QuotaExhausted as exc:
+                # Roll back to the last completed era so the retry replays this era whole.
+                if checkpoint.is_file():
+                    self.load_checkpoint(checkpoint)
+                self.paused = True
+                if self.live_print:
+                    print(f"第 {era} 纪中断：模型额度用尽（{exc}）。已保存到第 {era - 1} 纪的检查点，额度恢复后加 --resume 续跑。", flush=True)
+                break
             self.chronicle.append(section)
             out.write_text("\n".join(self.chronicle), encoding="utf-8")
+            self.save_checkpoint(checkpoint, era)
             if self.live_print:
                 alive = len(self.living())
                 print(f"【第 {era}/{len(eras)} 纪】{label} 事件 {len(events)} 条，政权 {alive} 个，"
                       f"世界人口 {sum(p.population for p in self.living()):.0f} 百万，用时 {time.time() - t0:.0f} 秒", flush=True)
+        if self.paused:
+            return "\n".join(self.chronicle)
         if not epochs or epochs >= len(self.eras):
-            self.chronicle.append(self.conclusion())
+            try:
+                self.chronicle.append(self.conclusion())
+            except QuotaExhausted:
+                self.paused = True
+                if self.live_print:
+                    print("史官论赞未生成：模型额度用尽，额度恢复后加 --resume 补写。", flush=True)
+                return "\n".join(self.chronicle)
         self.chronicle.append(self.knowledge_tree_text())
         self.chronicle.append(self.lineage_text())
         doc = "\n".join(self.chronicle)
