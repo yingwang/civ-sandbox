@@ -1,11 +1,18 @@
-"""Chinese CLI for the open-ended artificial-history simulator."""
+"""Chinese CLI for the open-ended artificial-history simulator.
+
+Defaults to the Unbounded LLM Mode (彻底释放大模型可能性，无硬编码枚举约束),
+with optional classic primitive-based simulation.
+"""
 
 import argparse
+from pathlib import Path
+import sys
 
 from engine import SimulationEngine
+from unbounded_llm_history import UnboundedLLMHistoryEngine
 
 
-def print_state(engine: SimulationEngine) -> None:
+def print_classic_state(engine: SimulationEngine) -> None:
     print("\n【纪末状态】")
     for society in engine.societies.values():
         status = "存续" if society.is_alive else "灭绝"
@@ -30,24 +37,19 @@ def print_state(engine: SimulationEngine) -> None:
             print(f"  {node.name}，依赖：{dependencies}，风险：{risks}")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="开放式人工历史模拟器")
-    parser.add_argument("epochs", nargs="?", type=int, default=8, help="推演纪数")
-    parser.add_argument("--seed", type=int, default=42, help="确定性随机种子")
-    parser.add_argument(
-        "--scenario",
-        choices=("warring-states", "open-origin"),
-        default="warring-states",
-        help="开局场景；默认从公元前230年的战国七雄开始",
-    )
-    parser.add_argument(
-        "--planner",
-        choices=("heuristic", "cli"),
-        default="cli",
-        help="计划、事件与纪事来源；默认 cli，heuristic 可完全按 seed 重放",
-    )
-    args = parser.parse_args()
+def run_unbounded_mode(epochs: int, seed: int, output_path: Path) -> None:
+    print("=" * 70)
+    print("【Civ-Sandbox 开放式文明模拟器 · 无约束大模型模式 (Default)】")
+    print("模式特色：彻底解除写死枚举动作与规则约束，完全由 LLM 驱动历史宏大演变")
+    print("涵盖维度：兼并决战、朝代更替、政制鼎革、科技范式跃迁（从冶铁到蒸汽算力与AI）与思想流变")
+    print(f"推演纪数：{epochs} 纪 (公元前230年 至 公元2026年)，随机种子：{seed}")
+    print("=" * 70)
 
+    engine = UnboundedLLMHistoryEngine(seed=seed)
+    engine.run(epochs=epochs, output_path=output_path, live_print=True)
+
+
+def run_classic_mode(args) -> None:
     engine = SimulationEngine(
         seed=args.seed, planner_mode=args.planner, scenario=args.scenario
     )
@@ -73,7 +75,7 @@ def main() -> None:
             break
         record = engine.step()
         print("\n" + record.chronicle_text)
-        print_state(engine)
+        print_classic_state(engine)
 
     stats = engine.backend.stats
     print(
@@ -82,6 +84,57 @@ def main() -> None:
         f"环境 Agent 的 LLM 事件 {stats['llm_event']} 项，离线回退事件 {stats['heuristic_event']} 项；"
         f"史家 Agent 的 LLM 纪事 {stats['llm_chronicle']} 纪，模板回退纪事 {stats['fallback_chronicle']} 纪。"
     )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Civ-Sandbox：开放式人工历史与大模型文明演化模拟器"
+    )
+    parser.add_argument(
+        "epochs",
+        nargs="?",
+        type=int,
+        default=None,
+        help="推演纪数 (无约束大模型模式默认全景 23 纪，覆盖前230至2026年)",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("unbounded", "classic"),
+        default="unbounded",
+        help="推演模式：默认 unbounded (真正释放大模型所有可能性的宏大演变)，classic 为离线规则/通用物理基元模式",
+    )
+    parser.add_argument("--seed", type=int, default=42, help="确定性随机种子")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path(".artifacts/china-unbounded-history-2026.md"),
+        help="输出通史文档路径",
+    )
+    parser.add_argument(
+        "--scenario",
+        choices=("warring-states", "open-origin"),
+        default="warring-states",
+        help="经典模式下的开局场景 (warring-states / open-origin)",
+    )
+    parser.add_argument(
+        "--planner",
+        choices=("cli", "heuristic"),
+        default="cli",
+        help="经典模式下的规划器来源 (cli / heuristic)",
+    )
+    args = parser.parse_args()
+
+    # If user explicitly specifies heuristic planner without specifying mode, default to classic mode
+    if args.planner == "heuristic" and "--mode" not in sys.argv:
+        args.mode = "classic"
+
+    epochs = args.epochs if args.epochs is not None else (23 if args.mode == "unbounded" else 8)
+
+    if args.mode == "unbounded":
+        run_unbounded_mode(epochs=epochs, seed=args.seed, output_path=args.output)
+    else:
+        args.epochs = epochs
+        run_classic_mode(args)
 
 
 if __name__ == "__main__":

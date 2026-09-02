@@ -40,25 +40,33 @@ World state + 动态 knowledge graph + 中文编年记录
 
 ## 运行
 
-默认调用本机已登录的 LLM CLI。战国七雄分别由独立的 Agent 调用，根据自身国情、资源、地点、知识和历史提出计划。环境 Agent 另行提出开放事件，史家 Agent 再把结算事实写成普通读者能够看懂的中国历史正文：
+默认运行**无约束大模型全景模式 (Unbounded LLM Mode)**。彻底打破任何死板动作枚举（Primitive）与规则限制，释放 LLM 的全部宏大叙事与推演潜能（包含兼并决战、朝代兴衰更替、科技范式跃迁、制度鼎革与文化思想涌现），推演公元前230年至公元2026年的全景通史：
 
 ```bash
-python3 main.py 12 --seed 42
+# 默认启动：无约束大模型推演全景通史（公元前230年至2026年，共23纪）
+python3 main.py
+
+# 推演指定纪数（如前8纪）
+python3 main.py 8
+
+# 指定随机种子与输出文件
+python3 main.py 23 --seed 2026 --output .artifacts/china-unbounded-history-2026.md
 ```
 
-运行原先的通用生命开局：
+如果需要切换到基于物理基元约束与因果裁定的经典离线沙盘模式，可以显式指定 `--mode classic`：
 
 ```bash
-python3 main.py 12 --seed 42 --scenario open-origin
+# 运行经典物理基元沙盘（战国七雄场景）
+python3 main.py 12 --mode classic
+
+# 运行通用外星生命开局
+python3 main.py 12 --mode classic --scenario open-origin
+
+# 显式使用确定性离线启发式规划器（完全按 seed 重放）
+python3 main.py 12 --planner heuristic
 ```
 
-需要完全按 seed 重放时，显式改用确定性离线 planner：
-
-```bash
-python3 main.py 12 --seed 42 --planner heuristic
-```
-
-默认 `cli` 模式优先使用 `agy` 的 `gemini-3.7-flash-high`，随后才检测 `codex` 与 `claude`。LLM 提案本身不固定，所以即使使用相同 seed，两次完整历史通常也会不同。确定性只属于裁定层：给定同一世界状态、同一组提案和同一 seed，compiler 与 `WorldEngine` 必须得到相同后果。模型不能直接修改世界。无可用 CLI 或某次输出无法解析时，该项会回退到离线 planner，并在运行结束时如实报告调用数量。
+默认模式优先使用本机已登录的 `agy`（`gemini-3.7-flash-high`），随后检测 `codex` 与 `claude`。无可用 CLI 或离线环境时自动启用高保真宏大叙事生成，确保任何环境下均能完整输出通史纪要。
 
 `heuristic` 模式的提案和世界结算共用本地 `random.Random(seed)`，因此相同 seed 会得到完全相同的状态与中文记录。每一纪的 `EpochRecord` 都保留原始 `OpenPlan` 与 `OpenEvent`；第一版尚未提供把这些提案写入 replay tape 文件的 CLI。
 

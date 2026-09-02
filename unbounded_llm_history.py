@@ -74,7 +74,12 @@ class UnboundedLLMHistoryEngine:
             pass
         return ""
 
-    def run(self) -> str:
+    def run(
+        self,
+        epochs: Optional[int] = None,
+        output_path: Optional[Path] = None,
+        live_print: bool = True,
+    ) -> str:
         all_chronicles = []
         all_chronicles.append("# 《华夏无疆演变志》：公元前230年至公元2026年全景通史\n")
         all_chronicles.append(
@@ -93,8 +98,15 @@ class UnboundedLLMHistoryEngine:
             "major_wonders": ["都江堰", "郑国渠", "长城雏形"],
         }
 
-        for idx, (era_label, era_theme, start_yr, end_yr) in enumerate(self.EPOCHS, 1):
-            print(f"[推演中] 第 {idx}/{len(self.EPOCHS)} 纪：{era_label} ({era_theme})...", flush=True)
+        selected_epochs = self.EPOCHS[:epochs] if epochs else self.EPOCHS
+        total_epochs = len(selected_epochs)
+
+        llm_count = 0
+        fallback_count = 0
+
+        for idx, (era_label, era_theme, start_yr, end_yr) in enumerate(selected_epochs, 1):
+            if live_print:
+                print(f"\n【推演纪元 {idx}/{total_epochs}】{era_label} —— {era_theme}", flush=True)
 
             prompt = (
                 f"你是一位融贯古今的顶尖大历史学家。现在进行【华夏两千年无拘束推演沙盘】第 {idx} 纪的真实宏大演变叙事。\n"
@@ -110,27 +122,39 @@ class UnboundedLLMHistoryEngine:
             )
 
             chronicle = self._query_llm(prompt)
-            if not chronicle:
-                # High-fidelity narrative fallback
+            if chronicle:
+                llm_count += 1
+            else:
+                fallback_count += 1
                 chronicle = self._generate_rich_narrative(idx, era_label, era_theme, state)
 
+            if live_print:
+                print(f"{chronicle}\n", flush=True)
+
             all_chronicles.append(f"\n## {chronicle}\n")
-            # Update state representation dynamically
             self._update_state(state, idx)
 
         # Conclusion
-        all_chronicles.append(
-            "\n## 【太史公·全景通史论赞】\n\n"
-            "夫两千二百五十六年之巨澜，起自公元前230年之金戈铁马，终至公元2026年之算力星河。\n"
-            "天下分合无常，山河变迁有道。自刀耕火种、诸侯裂土，历经郡县一统、隋唐大备、宋元市舶、明清交汇，"
-            "直至近代工业雷霆与当代智能浪潮，华夏文明以博大之包容与不屈之韧性，格物穷理，代代更始。\n"
-            "大模型所演变者，非孤立枯燥之死板数字，乃是众生生息、天人相搏、百工竞巧之壮丽史诗！\n"
-        )
+        if not epochs or epochs >= len(self.EPOCHS):
+            all_chronicles.append(
+                "\n## 【太史公·全景通史论赞】\n\n"
+                "夫两千二百五十六年之巨澜，起自公元前230年之金戈铁马，终至公元2026年之算力星河。\n"
+                "天下分合无常，山河变迁有道。自刀耕火种、诸侯裂土，历经郡县一统、隋唐大备、宋元市舶、明清交汇，"
+                "直至近代工业雷霆与当代智能浪潮，华夏文明以博大之包容与不屈之韧性，格物穷理，代代更始。\n"
+                "大模型所演变者，非孤立枯燥之死板数字，乃是众生生息、天人相搏、百工竞巧之壮丽史诗！\n"
+            )
 
         full_doc = "\n".join(all_chronicles)
-        out_file = Path(".artifacts/china-unbounded-history-2026.md")
+        out_file = Path(output_path) if output_path else Path(".artifacts/china-unbounded-history-2026.md")
         out_file.parent.mkdir(parents=True, exist_ok=True)
         out_file.write_text(full_doc, encoding="utf-8")
+
+        if live_print:
+            print("━" * 60)
+            print(f"【推演完成】共推演 {total_epochs} 纪，大模型生成 {llm_count} 纪，高保真叙事回退 {fallback_count} 纪。")
+            print(f"全景历史纪要已保存至: {out_file} (总字数: {len(full_doc)})")
+            print("━" * 60)
+
         return full_doc
 
     def _update_state(self, state: Dict, epoch_idx: int):
