@@ -104,6 +104,11 @@ class UnboundedLLMHistoryEngine:
         llm_count = 0
         fallback_count = 0
 
+        out_file = Path(output_path) if output_path else Path(".artifacts/china-unbounded-history-2026.md")
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        # Write initial header so file exists immediately
+        out_file.write_text("\n".join(all_chronicles), encoding="utf-8")
+
         for idx, (era_label, era_theme, start_yr, end_yr) in enumerate(selected_epochs, 1):
             if live_print:
                 print(f"\n【推演纪元 {idx}/{total_epochs}】{era_label} —— {era_theme}", flush=True)
@@ -133,6 +138,8 @@ class UnboundedLLMHistoryEngine:
 
             all_chronicles.append(f"\n## {chronicle}\n")
             self._update_state(state, idx)
+            # Incrementally write to disk so the file is always available
+            out_file.write_text("\n".join(all_chronicles), encoding="utf-8")
 
         # Conclusion
         if not epochs or epochs >= len(self.EPOCHS):
@@ -143,11 +150,9 @@ class UnboundedLLMHistoryEngine:
                 "直至近代工业雷霆与当代智能浪潮，华夏文明以博大之包容与不屈之韧性，格物穷理，代代更始。\n"
                 "大模型所演变者，非孤立枯燥之死板数字，乃是众生生息、天人相搏、百工竞巧之壮丽史诗！\n"
             )
+            out_file.write_text("\n".join(all_chronicles), encoding="utf-8")
 
         full_doc = "\n".join(all_chronicles)
-        out_file = Path(output_path) if output_path else Path(".artifacts/china-unbounded-history-2026.md")
-        out_file.parent.mkdir(parents=True, exist_ok=True)
-        out_file.write_text(full_doc, encoding="utf-8")
 
         if live_print:
             print("━" * 60)
