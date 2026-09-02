@@ -270,7 +270,7 @@ class OpenKnowledgeLedgerEngine(LedgerEngine):
             f"{p.name}由试验得「{name}」；其机制被记录为：{mechanism[:120] or '尚只知其现象，不明其所以然'}",
             polity=p.id,
             node=node.id,
-            kind=kind,
+            node_kind=kind,
             prerequisites=[node.name for node in resolved_nodes],
             question=question[:160],
             hypothesis=hypothesis[:160],
